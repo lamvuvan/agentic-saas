@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash(*)",          // cho phép tất cả bash command
+      "Read(*)",          // đọc mọi file
+      "Edit(*)",          // edit mọi file
+      "Write(*)"          // ghi file
+    ],
+    "deny": []            // không chặn gì
+  }
+}
