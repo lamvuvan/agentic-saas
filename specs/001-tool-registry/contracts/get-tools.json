@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tool-registry/get-tools",
+  "title": "GET /tools — Response Contract",
+  "description": "Response schema for GET /tools?namespace={optional}. Returns all registered tools in OpenAI function-call format.",
+  "version": "1.0.0",
+
+  "request": {
+    "method": "GET",
+    "path": "/tools",
+    "query_parameters": {
+      "namespace": {
+        "type": "string",
+        "required": false,
+        "description": "Filter tools by namespace (e.g., 'customer', 'order', 'bi'). Omit to return all tools."
+      }
+    },
+    "headers": {
+      "Authorization": {
+        "type": "string",
+        "required": false,
+        "description": "Bearer token. Not validated by registry; forwarded to backends on execute calls."
+      },
+      "X-Tenant-Id": {
+        "type": "string",
+        "required": false,
+        "description": "Tenant identifier. Forwarded to backends on execute calls."
+      }
+    }
+  },
+
+  "response": {
+    "200": {
+      "description": "Successfully retrieved tool list",
+      "content_type": "application/json",
+      "schema": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["type", "function"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["function"],
+              "description": "Always 'function' — OpenAI function-call format"
+            },
+            "function": {
+              "type": "object",
+              "required": ["name", "description", "parameters"],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9]+__[a-z0-9_]+$",
+                  "description": "Tool name in namespace__verb format",
+                  "examples": ["customer__get_customers", "order__create_order", "bi__run_query"]
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 10,
+                  "description": "Human/LLM-readable description of what the tool does and when to use it"
+                },
+                "parameters": {
+                  "type": "object",
+                  "required": ["type", "properties"],
+                  "properties": {
+                    "type": { "type": "string", "enum": ["object"] },
+                    "required": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "properties": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "type": { "type": "string" },
+                          "description": { "type": "string" },
+                          "default": {},
+                          "minimum": { "type": "number" },
+                          "maximum": { "type": "number" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "examples": [
+          [
+            {
+              "type": "function",
+              "function": {
+                "name": "customer__get_customers",
+                "description": "Find customers by name or phone number. Always call this before creating an order to get customer_id.",
+                "parameters": {
+                  "type": "object",
+                  "required": ["query"],
+                  "properties": {
+                    "query": { "type": "string", "description": "Name or phone number" },
+                    "limit": { "type": "integer", "default": 5 }
+                  }
+                }
+              }
+            }
+          ]
+        ]
+      }
+    }
+  }
+}

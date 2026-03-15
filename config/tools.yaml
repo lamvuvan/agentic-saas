@@ -1,0 +1,93 @@
+tools:
+  # ── CUSTOMER ─────────────────────────────────────────────────────────────
+  - name: customer__get_customers
+    namespace: customer
+    description: >
+      Find customers by name or phone number.
+      Always call this before creating an order to get customer_id.
+    parameters:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string, description: "Name or phone number, e.g. 'Lam' or '0901234567'" }
+        limit: { type: integer, default: 5 }
+    api:
+      method: GET
+      url: "${KIOTVIET_API_BASE}/customers"
+      params: { query: keyword, limit: pageSize }
+      response_path: data
+      response_rename: { contactNumber: phone, id: customer_id }
+
+  - name: customer__create_customer
+    namespace: customer
+    description: >
+      Create a new customer. Only use after get_customers finds no match
+      AND the user has confirmed they want a new customer created.
+    parameters:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        phone: { type: string }
+        address: { type: string }
+    api:
+      method: POST
+      url: "${KIOTVIET_API_BASE}/customers"
+      body_mapping: { name: name, phone: contactNumber, address: address }
+      response_fields: [id, name, code]
+
+  # ── ORDER ─────────────────────────────────────────────────────────────────
+  - name: order__create_order
+    namespace: order
+    description: >
+      Create a new order. Requires customer_id and confirmed order contents.
+      Always confirm the order preview with the user before calling this tool.
+    parameters:
+      type: object
+      required: [customer_id, items]
+      properties:
+        customer_id: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            required: [product_id, quantity, price]
+            properties:
+              product_id: { type: string }
+              quantity: { type: integer, minimum: 1 }
+              price: { type: number }
+              variant: { type: string }
+              note: { type: string }
+        note: { type: string }
+        table_number: { type: string }
+        discount: { type: number, default: 0 }
+    api:
+      method: POST
+      url: "${KIOTVIET_API_BASE}/orders"
+      body_mapping:
+        customer_id: customerId
+        items: orderDetails
+        table_number: tableNumber
+        discount: discount
+        note: description
+      item_mapping:
+        product_id: productId
+        quantity: quantity
+        price: price
+        note: note
+      response_fields: [id, code, statusValue, total]
+
+  # ── BI ────────────────────────────────────────────────────────────────────
+  - name: bi__run_query
+    namespace: bi
+    description: >
+      Execute a SELECT SQL query on the analytics PostgreSQL database.
+      Only SELECT statements are allowed; LIMIT 100 is applied automatically if absent.
+      Use for revenue, customer, inventory, and debt queries.
+    parameters:
+      type: object
+      required: [sql]
+      properties:
+        sql: { type: string, description: "SQL SELECT query only" }
+        limit: { type: integer, default: 100, maximum: 500 }
+    handler: bi_query_handler

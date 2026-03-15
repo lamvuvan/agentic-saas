@@ -1,0 +1,103 @@
+version: "3.9"
+
+services:
+  tool-registry:
+    build:
+      context: .
+      dockerfile: tool_registry/Dockerfile
+    ports:
+      - "${TOOL_REGISTRY_PORT:-8001}:8001"
+    environment:
+      KIOTVIET_API_BASE: ${KIOTVIET_API_BASE}
+      DATABASE_URL: ${DATABASE_URL}
+      TOOLS_YAML_PATH: /app/config/tools.yaml
+      HOTRELOAD_INTERVAL_S: ${HOTRELOAD_INTERVAL_S:-1}
+      TOOL_REGISTRY_PORT: "8001"
+    volumes:
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: orchestrator/Dockerfile
+    ports:
+      - "${ORCHESTRATOR_PORT:-8000}:8000"
+    environment:
+      TOOL_REGISTRY_URL: http://tool-registry:8001
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    depends_on:
+      tool-registry:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  order-agent:
+    build:
+      context: .
+      dockerfile: order_agent/Dockerfile
+    ports:
+      - "${ORDER_AGENT_PORT:-8002}:8002"
+    environment:
+      TOOL_REGISTRY_URL: http://tool-registry:8001
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    depends_on:
+      tool-registry:
+        condition: service_healthy
+    restart: unless-stopped
+
+  bi-agent:
+    build:
+      context: .
+      dockerfile: bi_agent/Dockerfile
+    ports:
+      - "${BI_AGENT_PORT:-8003}:8003"
+    environment:
+      TOOL_REGISTRY_URL: http://tool-registry:8001
+      DATABASE_URL: ${DATABASE_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    depends_on:
+      tool-registry:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: analytics
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d analytics"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

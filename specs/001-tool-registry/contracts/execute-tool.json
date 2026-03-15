@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tool-registry/execute-tool",
+  "title": "POST /tools/{name}/execute — Request & Response Contract",
+  "description": "Executes a named tool by forwarding to its configured backend (HTTP adapter) or invoking its registered handler. Bearer token is forwarded; never stored.",
+  "version": "1.0.0",
+
+  "request": {
+    "method": "POST",
+    "path": "/tools/{name}/execute",
+    "path_parameters": {
+      "name": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+__[a-z0-9_]+$",
+        "description": "Tool name matching a registered entry (namespace__verb format)",
+        "examples": ["customer__get_customers", "order__create_order", "bi__run_query"]
+      }
+    },
+    "headers": {
+      "Authorization": {
+        "type": "string",
+        "required": false,
+        "description": "Bearer token. Read into ContextVar and forwarded to backend. MUST NOT be stored."
+      },
+      "X-Tenant-Id": {
+        "type": "string",
+        "required": false,
+        "description": "Tenant identifier. Forwarded to backend alongside Authorization."
+      },
+      "Content-Type": {
+        "type": "string",
+        "enum": ["application/json"],
+        "required": true
+      }
+    },
+    "body_schema": {
+      "type": "object",
+      "description": "Key-value parameters matching the tool's declared parameter schema",
+      "additionalProperties": true,
+      "examples": [
+        { "query": "Lâm", "limit": 5 },
+        { "customer_id": "12345", "items": [{ "product_id": "p001", "quantity": 2, "price": 35000 }] },
+        { "sql": "SELECT SUM(total) FROM orders WHERE date = CURRENT_DATE", "limit": 100 }
+      ]
+    }
+  },
+
+  "response": {
+    "200": {
+      "description": "Tool executed successfully",
+      "content_type": "application/json",
+      "schema": {
+        "type": "object",
+        "required": ["tool_name", "result", "metadata"],
+        "properties": {
+          "tool_name": {
+            "type": "string",
+            "description": "Name of the executed tool"
+          },
+          "result": {
+            "oneOf": [
+              { "type": "object" },
+              { "type": "array" }
+            ],
+            "description": "Normalized result after response_path extraction and response_rename mapping"
+          },
+          "metadata": {
+            "type": "object",
+            "required": ["duration_ms", "backend_status"],
+            "properties": {
+              "duration_ms": {
+                "type": "integer",
+                "description": "Total execution time in milliseconds (includes backend latency)"
+              },
+              "backend_status": {
+                "type": "integer",
+                "description": "HTTP status code returned by the backend API (HTTP dispatch only); 0 for handler dispatch"
+              }
+            }
+          }
+        },
+        "examples": [
+          {
+            "tool_name": "customer__get_customers",
+            "result": [
+              { "customer_id": "12345", "name": "Lâm Nguyễn", "phone": "0901234567" }
+            ],
+            "metadata": { "duration_ms": 245, "backend_status": 200 }
+          }
+        ]
+      }
+    },
+
+    "404": {
+      "description": "Tool name not found in registry",
+      "schema": {
+        "type": "object",
+        "required": ["tool_name", "error", "error_code"],
+        "properties": {
+          "tool_name": { "type": "string" },
+          "error": { "type": "string", "description": "English error message" },
+          "error_code": { "type": "string", "enum": ["TOOL_NOT_FOUND"] },
+          "metadata": {
+            "type": "object",
+            "properties": { "duration_ms": { "type": "integer" } }
+          }
+        }
+      }
+    },
+
+    "422": {
+      "description": "Request body fails parameter schema validation",
+      "schema": {
+        "type": "object",
+        "required": ["tool_name", "error", "error_code"],
+        "properties": {
+          "tool_name": { "type": "string" },
+          "error": { "type": "string" },
+          "error_code": { "type": "string", "enum": ["VALIDATION_ERROR"] },
+          "metadata": {
+            "type": "object",
+            "properties": { "duration_ms": { "type": "integer" } }
+          }
+        }
+      }
+    },
+
+    "504": {
+      "description": "Backend API timed out (10 s limit, 2 retries exhausted)",
+      "schema": {
+        "type": "object",
+        "required": ["tool_name", "error", "error_code"],
+        "properties": {
+          "tool_name": { "type": "string" },
+          "error": { "type": "string", "description": "English timeout error message" },
+          "error_code": { "type": "string", "enum": ["TIMEOUT"] },
+          "metadata": {
+            "type": "object",
+            "properties": { "duration_ms": { "type": "integer" } }
+          }
+        }
+      }
+    },
+
+    "502": {
+      "description": "Backend API returned an error response",
+      "schema": {
+        "type": "object",
+        "required": ["tool_name", "error", "error_code"],
+        "properties": {
+          "tool_name": { "type": "string" },
+          "error": { "type": "string", "description": "English error message describing backend failure" },
+          "error_code": {
+            "type": "string",
+            "enum": ["BACKEND_ERROR", "HANDLER_ERROR"]
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "duration_ms": { "type": "integer" },
+              "backend_status": { "type": "integer" }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  "security_constraints": [
+    "Authorization header value MUST NOT appear in any log output",
+    "Authorization header value MUST NOT appear in any response body",
+    "Authorization header value MUST NOT be written to any storage",
+    "If Authorization header is absent, request is forwarded as-is; no 401 at registry level"
+  ]
+}
