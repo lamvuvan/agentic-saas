@@ -165,6 +165,7 @@ async def invoke_chat(
         intent=intent,
         agent_results=agent_results,
         history=history,
+        trace_id=trace_id,
     )
 
     # Save turn to session history

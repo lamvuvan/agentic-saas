@@ -64,11 +64,3 @@ class ChatResponse(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
-class VoiceResponse(BaseModel):
-    session_id: str
-    transcription: str
-    reply: str
-    intent: str
-    trace_id: str
-    requires_input: bool = False
-    metadata: dict[str, Any] | None = None

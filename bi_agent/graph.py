@@ -34,6 +34,7 @@ async def run_bi_graph(
     from bi_agent.nodes.format_response import format_response  # noqa: PLC0415
 
     nl_input = params.get("message", "")
+    trace_id = params.get("_trace_id", task_id)
     tool_calls: list[str] = []
 
     # Step 1: Load schema context
@@ -43,7 +44,7 @@ async def run_bi_graph(
     sql, explanation = await generate_sql(
         nl_input=nl_input,
         schema_context=schema_context,
-        trace_id=task_id,
+        trace_id=trace_id,
     )
 
     if not sql:
@@ -97,7 +98,7 @@ async def run_bi_graph(
         rows=rows,
         row_count=row_count,
         generated_sql=sql_with_limit,
-        trace_id=task_id,
+        trace_id=trace_id,
     )
 
     return {

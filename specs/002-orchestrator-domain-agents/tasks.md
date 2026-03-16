@@ -8,7 +8,7 @@
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies on incomplete tasks)
-- **[Story]**: Which user story this task belongs to (US1–US6)
+- **[Story]**: Which user story this task belongs to (US1–US5)
 
 ---
 
@@ -17,7 +17,7 @@
 **Purpose**: Service directories, dependency declarations, Docker Compose additions, environment template
 
 - [x] T001 Create service directories: orchestrator/, order_agent/, bi_agent/, shared/a2a/, tests/002-orchestrator-domain-agents/{contract,integration,unit}/
-- [x] T002 [P] Add Python dependencies to pyproject.toml or requirements files: langgraph>=0.2, langgraph-checkpoint-redis>=0.0.6, sentence-transformers, faiss-cpu, faster-whisper, asyncpg, langchain-openai, httpx, respx
+- [x] T002 [P] Add Python dependencies to pyproject.toml or requirements files: langgraph>=0.2, langgraph-checkpoint-redis>=0.0.6, sentence-transformers, faiss-cpu, asyncpg, langchain-openai, httpx, respx
 - [x] T003 [P] Add orchestrator, order-agent, bi-agent services to docker-compose.yml with ports 8000/8002/8003, healthcheck endpoints, and Redis/Postgres dependencies
 - [x] T004 [P] Add new environment variables to .env.example: ORDER_AGENT_URL, BI_AGENT_URL, OPENAI_MODEL_FAST (gpt-4o-mini), OPENAI_MODEL_SMART (gpt-4o), A2A_POLL_INTERVAL_MS (500), A2A_TIMEOUT_MS (30000)
 
@@ -169,20 +169,7 @@
 
 ---
 
-## Phase 8: User Story 6 — Voice Input (Priority: P2)
-
-**Goal**: Staff can upload audio files; system transcribes and routes through identical pipeline as POST /chat.
-
-**Independent Test**: Upload 10 Vietnamese audio clips. Verify ≥ 9/10 WER < 15%, each routes to correct agent, response includes transcription field.
-
-- [x] T065 [US6] Implement orchestrator/stt.py: WhisperSTT class using faster-whisper WhisperModel("large-v3", compute_type="int8", download_root="/models/whisper"), transcribe_audio(audio_path) in asyncio.run_in_executor(None, fn), vad_filter=True, language="vi", join segments, strip whitespace
-- [x] T066 [US6] Implement POST /voice endpoint in orchestrator/main.py: multipart UploadFile + optional session_id form field, normalize to 16kHz mono WAV via ffmpeg subprocess, reject > 60s with 422 AUDIO_TOO_LONG, call stt.transcribe_audio(), route transcription through chat pipeline, return VoiceResponse (session_id, transcription, reply, intent, trace_id, metadata.transcription_duration_ms) per contracts/voice.json
-
-**Checkpoint**: Voice input works — audio file → transcription → same pipeline as POST /chat
-
----
-
-## Phase 9: Polish & Cross-Cutting Concerns
+## Phase 8: Polish & Cross-Cutting Concerns
 
 **Purpose**: Eval harness, observability, CLAUDE.md, security audit
 
@@ -207,15 +194,13 @@
 - **Phase 5 (US2 — Order Creation)**: Depends on Phase 3 (Order Agent A2A server); can run in parallel with Phase 4 (US1)
 - **Phase 6 (US3 — BI Queries)**: Depends on Phase 3; can run in parallel with Phases 4 and 5
 - **Phase 7 (US4 — Multi-Turn)**: Depends on Phases 4 + 5 (extends both with checkpointer)
-- **Phase 8 (US6 — Voice)**: Depends on Phase 4 (uses POST /chat pipeline)
-- **Phase 9 (Polish)**: Depends on all previous phases
+- **Phase 8 (Polish)**: Depends on all previous phases
 
 ### User Story Dependencies
 
 - **US5 (A2A) → US1, US2, US3**: A2A backbone must exist before agents can communicate
 - **US1 (Intent Routing) → US4 (Multi-Turn)**: Session management extends US1's graph
 - **US2 (Order Creation) → US4 (Multi-Turn)**: Confirmation interrupt extends US2's graph
-- **US1 (Intent Routing) → US6 (Voice)**: Voice endpoint reuses /chat pipeline from US1
 
 ### Within Each Phase
 
@@ -284,7 +269,6 @@ Sequential (after T050–T053 done):
 4. US2 → Real Order Agent → End-to-end order creation
 5. US3 → Real BI Agent → Business intelligence queries
 6. US4 → Multi-turn → Persistent order confirmation flow
-7. US6 → Voice → Audio input pipeline
 
 ### Parallel Team Strategy
 
@@ -309,10 +293,9 @@ All three stories are independently testable once the A2A backbone exists.
 | Phase 5 | Order Creation | T031–T046 | US2 |
 | Phase 6 | BI Queries | T047–T060 | US3 |
 | Phase 7 | Multi-Turn State | T061–T064 | US4 |
-| Phase 8 | Voice Input | T065–T066 | US6 |
-| Phase 9 | Polish | T067–T073 | — |
+| Phase 8 | Polish | T067–T073 | — |
 
-**Total**: 73 tasks across 9 phases
+**Total**: 71 tasks across 8 phases
 
 ---
 

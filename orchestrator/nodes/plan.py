@@ -34,7 +34,7 @@ _PLAN_SCHEMA = {
                         "step_id": {"type": "string"},
                         "agent": {"type": "string"},
                         "skill": {"type": "string"},
-                        "params": {"type": "object", "additionalProperties": True},
+                        "params": {"type": "string"},
                         "depends_on": {"type": "array", "items": {"type": "string"}},
                         "status": {"type": "string"},
                     },
@@ -99,10 +99,15 @@ async def generate_plan(
                         "depends_on": [], "status": "pending"}],
         }
 
-    # Inject actual session_id into params (prompt used PLACEHOLDER)
+    # params may be a JSON-encoded string (Structured Outputs workaround) — parse it
     for step in raw.get("steps", []):
-        if "params" in step:
-            step["params"]["session_id"] = session_id
+        p = step.get("params", {})
+        if isinstance(p, str):
+            try:
+                step["params"] = json.loads(p)
+            except (json.JSONDecodeError, ValueError):
+                step["params"] = {}
+        step["params"]["session_id"] = session_id
 
     plan = ExecutionPlan(
         plan_id=str(uuid.uuid4()),

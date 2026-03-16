@@ -9,7 +9,7 @@ services:
       - "${TOOL_REGISTRY_PORT:-8001}:8001"
     environment:
       API_BASE: ${API_BASE}
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: postgresql+asyncpg://user:password@postgres:5432/analytics
       TOOLS_YAML_PATH: /app/config/tools.yaml
       HOTRELOAD_INTERVAL_S: ${HOTRELOAD_INTERVAL_S:-1}
       TOOL_REGISTRY_PORT: "8001"
@@ -33,14 +33,15 @@ services:
       TOOL_REGISTRY_URL: http://tool-registry:8001
       ORDER_AGENT_URL: http://order-agent:8002
       BI_AGENT_URL: http://bi-agent:8003
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_URL: redis://redis:6379/0
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL_FAST: ${OPENAI_MODEL_FAST:-gpt-4o-mini}
       OPENAI_MODEL_SMART: ${OPENAI_MODEL_SMART:-gpt-4o}
       A2A_POLL_INTERVAL_MS: ${A2A_POLL_INTERVAL_MS:-500}
       A2A_TIMEOUT_MS: ${A2A_TIMEOUT_MS:-30000}
-    volumes:
-      - whisper_models:/models/whisper
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
     depends_on:
       tool-registry:
         condition: service_healthy
@@ -62,10 +63,13 @@ services:
       - "${ORDER_AGENT_PORT:-8002}:8002"
     environment:
       TOOL_REGISTRY_URL: http://tool-registry:8001
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_URL: redis://redis:6379/0
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL_FAST: ${OPENAI_MODEL_FAST:-gpt-4o-mini}
       OPENAI_MODEL_SMART: ${OPENAI_MODEL_SMART:-gpt-4o}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
     depends_on:
       tool-registry:
         condition: service_healthy
@@ -87,11 +91,14 @@ services:
       - "${BI_AGENT_PORT:-8003}:8003"
     environment:
       TOOL_REGISTRY_URL: http://tool-registry:8001
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://user:password@postgres:5432/analytics
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL_FAST: ${OPENAI_MODEL_FAST:-gpt-4o-mini}
       OPENAI_MODEL_SMART: ${OPENAI_MODEL_SMART:-gpt-4o}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
     depends_on:
       tool-registry:
         condition: service_healthy
@@ -140,5 +147,4 @@ services:
 
 volumes:
   postgres_data:
-  whisper_models:
   redis_data:

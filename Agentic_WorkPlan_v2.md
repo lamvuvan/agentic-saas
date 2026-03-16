@@ -30,8 +30,7 @@ Docker Compose:
 **1.1 Communication Flow**
 
 +----------------------------------------------------------------------+
-| **User → Orchestrator:** HTTP POST /chat \| WebSocket /chat/stream   |
-| \| POST /voice (STT)                                                 |
+| **User → Orchestrator:** HTTP POST /chat (text input)                |
 |                                                                      |
 | **Orchestrator → Domain Agent:** A2A --- POST /a2a/tasks + GET       |
 | /a2a/tasks/{id} (poll)                                               |
@@ -96,7 +95,7 @@ api:
 
 method: GET
 
-url: \"\${API\_BASE}/customers\"
+url: \"\${API_BASE}/customers\"
 
 params: { query: keyword, limit: pageSize }
 
@@ -132,7 +131,7 @@ api:
 
 method: POST
 
-url: \"\${API\_BASE}/customers\"
+url: \"\${API_BASE}/customers\"
 
 body\_mapping: { name: name, phone: contactNumber, address: address }
 
@@ -190,7 +189,7 @@ api:
 
 method: POST
 
-url: \"\${API\_BASE}/orders\"
+url: \"\${API_BASE}/orders\"
 
 body\_mapping:
 
@@ -323,9 +322,9 @@ xong.
 
 **4. Sprint 2 --- Core Agents: Order & BI (Ngày 8--14)**
 
-  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-  **Mục tiêu:** Order Agent xử lý đúng câu tiếng Việt tự nhiên ≥ 90% → tạo đơn thành công. BI Agent trả lời đúng ≥ 80% trên 15 query doanh số/khách hàng/công nợ. Voice (STT) hoạt động. Demo cuối sprint: live demo với dữ liệu thực.
-  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **Mục tiêu:** Order Agent xử lý đúng câu tiếng Việt tự nhiên ≥ 90% → tạo đơn thành công. BI Agent trả lời đúng ≥ 80% trên 15 query doanh số/khách hàng/công nợ. Demo cuối sprint: live demo với dữ liệu thực.
+  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 **4.1 Order Agent --- Thiết kế Reasoning Pipeline**
 
@@ -361,8 +360,7 @@ xong.
   **12**     NL2SQL prompt: system prompt + schema + 6 few-shot (doanh thu, khách hàng, công nợ, top N, time range); test 15 queries điển hình           AI          *SQL correctness ≥ 80% trên 15 queries*             **P0**
   **13**     BI query executor: asyncpg SELECT-only safety check, LIMIT inject, timeout 10s, error handling; result formatter (text/table/summary)       SE          *10 queries execute đúng, safety block 5 bad SQL*   **P0**
   **13**     BI Agent A2A server: xử lý skill \"bi\_query\"; integrate NL2SQL + executor; test 20 BI queries (doanh thu, khách hàng, công nợ, tồn kho)   AI          *Pass ≥ 80% trên 20 BI queries*                     **P0**
-  **14**     STT integration: faster-whisper large-v3, POST /voice endpoint, preprocess audio, test 10 voice clips tiếng Việt, đo WER                    SE          *WER \< 15% trên test clips*                        **P1**
-  **14**     Sprint 2 demo: live demo 5 kịch bản thực tế (order chat, order voice, BI doanh thu, BI khách hàng, BI công nợ) --- record video             All         *Demo video 5 phút, pass ≥ 85% scenarios*           **P0**
+  **14**     Sprint 2 demo: live demo 5 kịch bản thực tế (order chat x2, BI doanh thu, BI khách hàng, BI công nợ) --- record video                       All         *Demo video 5 phút, pass ≥ 85% scenarios*           **P0**
   ---------- ------------------------------------------------------------------------------------------------------------------------------------------- ----------- --------------------------------------------------- -------------
 
 **4.3 Order Agent System Prompt --- Key Structure**
@@ -681,10 +679,10 @@ indent=2))
   **18**     Latency optimization: parallel tool calls (asyncio.gather), Redis catalog cache, async throughout; đo P95 trước/sau                                    SE          *P95 Order \< 3s; P95 BI \< 5s*           **P1**
   **19**     Error handling toàn hệ thống: LLM timeout fallback, product not found message, SQL error user-friendly, API error passthrough                          SE          *Mọi error path trả message tiếng Việt*   **P1**
   **19**     Makefile eval targets: \`make eval-order\`, \`make eval-bi\`, \`make eval-all\`; GitHub Actions CI: chạy eval trên PR, fail nếu pass rate giảm \> 5%   TL          *CI pipeline chạy được*                   **P1**
-  **20**     Demo UI: HTML/JS đơn giản --- text input + voice record button + conversation history + order preview card; không cần framework                        SE          *Demo UI chạy được trên localhost*        **P1**
+  **20**     Demo UI: HTML/JS đơn giản --- text input + conversation history + order preview card; không cần framework                                              SE          *Demo UI chạy được trên localhost*        **P1**
   **20**     Documentation: README setup, API docs, prompt engineering decisions, tool\_config guide, eval guide                                                    TL          *README đầy đủ*                           **P2**
   **21**     Final eval run: toàn bộ 60+ test cases; target pass rate E2E ≥ 85%. Ghi nhận kết quả vào reports/sprint3\_final.json                                   All         *Pass rate report chính thức*             **P0**
-  **21**     Demo chuẩn bị: 6 kịch bản thực tế (order chat x2, order voice x1, BI doanh thu, BI khách hàng, BI công nợ), rehearsal, record video                    All         *Demo video 7 phút + slide 5 trang*       **P0**
+  **21**     Demo chuẩn bị: 5 kịch bản thực tế (order chat x2, BI doanh thu, BI khách hàng, BI công nợ), rehearsal, record video                                    All         *Demo video 7 phút + slide 5 trang*       **P0**
   ---------- ------------------------------------------------------------------------------------------------------------------------------------------------------ ----------- ----------------------------------------- -------------
 
 **6. Claude Code --- Workflow Tích Hợp**
@@ -783,10 +781,9 @@ với catalog
   **6**    E2E BI query success rate                       **≥ 80%**            20 BI query test cases
   **7**    Latency P95 --- Order chat                      **\< 3 giây**        30 requests, concurrent=1
   **8**    Latency P95 --- BI query                        **\< 5 giây**        20 queries, concurrent=1
-  **9**    Voice STT Word Error Rate                       **\< 15% WER**       10 audio clips tiếng Việt
-  **10**   Auth token không bao giờ được lưu hoặc log      **100% compliant**   Code review + log audit
-  **11**   Eval CI pipeline chạy trên mỗi PR               **Pass**             GitHub Actions log
-  **12**   Live demo 6 kịch bản không có unhandled error   **0 crash**          Demo video
+  **9**    Auth token không bao giờ được lưu hoặc log      **100% compliant**   Code review + log audit
+  **10**   Eval CI pipeline chạy trên mỗi PR               **Pass**             GitHub Actions log
+  **11**   Live demo 5 kịch bản không có unhandled error   **0 crash**          Demo video
   -------- ----------------------------------------------- -------------------- ----------------------------
 
 **7.2 Post-MVP Backlog**

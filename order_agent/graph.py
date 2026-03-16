@@ -75,6 +75,7 @@ async def run_order_graph(
 
     message = params.get("message", "")
     session_id = params.get("session_id", task_id)
+    trace_id = params.get("_trace_id", task_id)
     continuation = params.get("continuation")
     tool_calls: list[str] = []
 
@@ -124,7 +125,7 @@ async def run_order_graph(
     # ── New order path ────────────────────────────────────────────────────────
 
     # Step 1: Extract entities
-    entities = await extract_entities(message, trace_id=task_id)
+    entities = await extract_entities(message, trace_id=trace_id)
 
     if entities.intent_modifier == "cancel":
         return {
@@ -139,7 +140,7 @@ async def run_order_graph(
         # For tests without a real matcher: return preview with unresolved items
         return _fallback_preview(entities, session_id, task_id)
 
-    matches, unresolved = await match_products(entities, product_matcher, trace_id=task_id)
+    matches, unresolved = await match_products(entities, product_matcher, trace_id=trace_id)
 
     # If any items are unresolved, ask user to clarify
     if unresolved:

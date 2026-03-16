@@ -57,10 +57,12 @@ async def dispatch_plan(
         )
 
         try:
+            # Forward trace_id in params so domain agent traces link to same Langfuse trace
+            params_with_trace = {**step.params, "_trace_id": trace_id}
             task_id = await submit_to_agent(
                 agent_url=agent_url,
                 skill=step.skill,
-                params=step.params,
+                params=params_with_trace,
                 trace_id=trace_id,
             )
             step.task_id = task_id

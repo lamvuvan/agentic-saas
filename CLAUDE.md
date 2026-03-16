@@ -5,6 +5,8 @@ Auto-generated from all feature plans. Last updated: 2026-03-16
 ## Active Technologies
 - Python 3.12 + FastAPI 0.111+, LangGraph 0.2+, LangChain, langchain-openai, langgraph-checkpoint-redis, httpx, sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2), faiss-cpu, faster-whisper, asyncpg, pydantic v2, pytest, pytest-asyncio, respx, ruff (002-orchestrator-domain-agents)
 - Redis (LangGraph checkpointer + session state + A2A task store); PostgreSQL (analytics DB for BI queries — already deployed); No new DB schema for v1 (002-orchestrator-domain-agents)
+- Python 3.12 + FastAPI 0.111+, Pydantic v2, LangGraph 0.2+, LangChain, langchain-openai, langgraph-checkpoint-redis, httpx (async), asyncpg, sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`), faiss-cpu, redis, openai (002-orchestrator-domain-agents)
+- Redis (LangGraph checkpointer, session state, A2A task store — 30-min session TTL, 1-hr task TTL); PostgreSQL with pgvector (analytics DB, read-only via BI Agent) (002-orchestrator-domain-agents)
 
 - **Python 3.12** + FastAPI 0.111+, Pydantic v2, httpx (async) — all services
 - **LangGraph / LangChain** — Orchestrator and Domain Agent reasoning pipelines
@@ -150,4 +152,5 @@ pytest tests/001-tool-registry/integration/              # integration tests onl
 <!-- MANUAL ADDITIONS END -->
 
 ## Recent Changes
+- 002-orchestrator-domain-agents: Added Python 3.12 + FastAPI 0.111+, Pydantic v2, LangGraph 0.2+, LangChain, langchain-openai, langgraph-checkpoint-redis, httpx (async), asyncpg, sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`), faiss-cpu, redis, openai
 - 002-orchestrator-domain-agents: Added Python 3.12 + FastAPI 0.111+, LangGraph 0.2+, LangChain, langchain-openai, langgraph-checkpoint-redis, httpx, sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2), faiss-cpu, faster-whisper, asyncpg, pydantic v2, pytest, pytest-asyncio, respx, ruff
