@@ -195,7 +195,7 @@ Result of matching an `OrderItem.product_query` against the FAISS product index.
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
 | `product_query` | `str` | required | Original query |
-| `matched_product_id` | `str | null` | optional | KiotViet product ID if matched |
+| `matched_product_id` | `str | null` | optional | product ID if matched |
 | `matched_product_name` | `str | null` | optional | Display name of matched product |
 | `price` | `float | null` | optional | Unit price |
 | `similarity_score` | `float` | 0.0–1.0, required | FAISS cosine similarity |
@@ -214,7 +214,7 @@ In-progress order held during multi-turn confirmation flow.
 |-------|------|-------------|-------------|
 | `draft_id` | `str` (UUID) | PK, required | Unique draft identifier (= A2A task_id) |
 | `session_id` | `str` | FK → UserSession, required | Parent session |
-| `customer_id` | `str | null` | optional | Resolved KiotViet customer ID |
+| `customer_id` | `str | null` | optional | Resolved customer ID |
 | `customer_name` | `str | null` | optional | Customer display name |
 | `table_number` | `str | null` | optional | Table number |
 | `items` | `list[ResolvedOrderItem]` | min 1, required | Items with resolved product IDs |
@@ -233,7 +233,7 @@ A matched and confirmed order item ready for submission.
 
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
-| `product_id` | `str` | required | KiotViet product ID |
+| `product_id` | `str` | required | product ID |
 | `product_name` | `str` | required | Display name |
 | `quantity` | `int` | min 1, required | Confirmed quantity |
 | `price` | `float` | required | Unit price at time of order |
@@ -279,7 +279,7 @@ awaiting_confirm (preview presented, interrupt active)
     ↓
 confirmed (user approved)
     ↓
-submitted (order sent to KiotViet)
+submitted (order sent to backend)
     OR
 cancelled (user cancelled)
 ```

@@ -1,4 +1,4 @@
-"""Submit order node — sends confirmed order to KiotViet via Tool Registry."""
+"""Submit order node — sends confirmed order to the backend via Tool Registry."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ async def submit_order(
     tool_registry_url: str,
 ) -> dict:
     """
-    Submit confirmed OrderDraft to KiotViet via Tool Registry.
+    Submit confirmed OrderDraft to the backend via Tool Registry.
 
     Returns result dict with order_code or error.
     """

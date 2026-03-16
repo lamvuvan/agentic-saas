@@ -8,7 +8,7 @@
 
 - Python 3.12
 - Docker Compose (or run locally with `uvicorn`)
-- `KIOTVIET_API_BASE` environment variable set (for customer/order tools)
+- `API_BASE` environment variable set (for customer/order tools)
 - `DATABASE_URL` environment variable set (for `bi_query_handler`)
 
 ---
@@ -34,7 +34,7 @@ tools:
         limit: { type: integer, default: 5 }
     api:
       method: GET
-      url: "${KIOTVIET_API_BASE}/customers"
+      url: "${API_BASE}/customers"
       params: { query: keyword, limit: pageSize }
       response_path: data
       response_rename: { contactNumber: phone, id: customer_id }
@@ -73,7 +73,7 @@ curl http://localhost:8001/health
 
 ```bash
 cd tool_registry
-KIOTVIET_API_BASE=https://api.kiotviet.vn/v3 \
+API_BASE=https://api.example.com/v3 \
 DATABASE_URL=postgresql+asyncpg://user:pass@localhost/analytics \
 uvicorn main:app --reload --port 8001
 ```
@@ -200,7 +200,7 @@ pytest tests/001-tool-registry/unit/ -v
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `KIOTVIET_API_BASE` | Yes (for HTTP tools) | — | KiotViet API base URL |
+| `API_BASE` | Yes (for HTTP tools) | — | API base URL |
 | `DATABASE_URL` | Yes (for bi handler) | — | asyncpg PostgreSQL connection string |
 | `TOOL_REGISTRY_PORT` | No | `8001` | Service listen port |
 | `TOOLS_YAML_PATH` | No | `config/tools.yaml` | Path to tool definitions |

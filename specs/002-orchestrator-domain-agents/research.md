@@ -105,7 +105,7 @@ raw_text
 **Key constraints**:
 - Index built at startup from product catalog API; rebuild every 30 minutes in background `asyncio.create_task`
 - Rebuild must be atomic: build new index into temp object, then swap reference — never partially update live index
-- Product ID (KiotViet `id`) stored in parallel list aligned with FAISS index positions
+- Product ID (`id`) stored in parallel list aligned with FAISS index positions
 
 ---
 

@@ -228,7 +228,7 @@ tools:
         limit:  { type: integer, default: 5 }
     api:
       method: GET
-      url: "${KIOTVIET_API_BASE}/customers"
+      url: "${API_BASE}/customers"
       params:           { query: keyword, limit: pageSize }
       response_path:    data
       response_rename:  { contactNumber: phone, id: customer_id }
@@ -254,7 +254,7 @@ tools:
 
 | Variable | Used By | Description |
 |----------|---------|-------------|
-| `KIOTVIET_API_BASE` | ApiBlock url interpolation | Base URL for KiotViet REST API |
+| `API_BASE` | ApiBlock url interpolation | Base URL for REST API |
 | `DATABASE_URL` | `bi_query_handler` | asyncpg PostgreSQL connection string |
 | `TOOL_REGISTRY_PORT` | Docker Compose / main.py | Service port (default: 8001) |
 | `TOOLS_YAML_PATH` | config_loader | Path to tools.yaml (default: `config/tools.yaml`) |

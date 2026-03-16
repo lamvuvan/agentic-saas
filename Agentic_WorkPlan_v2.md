@@ -96,7 +96,7 @@ api:
 
 method: GET
 
-url: \"\${KIOTVIET\_API\_BASE}/customers\"
+url: \"\${API\_BASE}/customers\"
 
 params: { query: keyword, limit: pageSize }
 
@@ -132,7 +132,7 @@ api:
 
 method: POST
 
-url: \"\${KIOTVIET\_API\_BASE}/customers\"
+url: \"\${API\_BASE}/customers\"
 
 body\_mapping: { name: name, phone: contactNumber, address: address }
 
@@ -190,7 +190,7 @@ api:
 
 method: POST
 
-url: \"\${KIOTVIET\_API\_BASE}/orders\"
+url: \"\${API\_BASE}/orders\"
 
 body\_mapping:
 
@@ -310,7 +310,7 @@ xong.
   **2**      shared/llm.py: OpenAI async wrapper, select\_model(task\_type) từ config, structured output (response\_format=json\_object), retry logic             AI          *llm.py unit test: intent/entity task types*       **P0**
   **2**      shared/auth\_context.py + AuthForwardMiddleware --- copy vào tất cả services; unit test: token set/get trong async context                           SE          *Auth forward test pass 100%*                      **P0**
   **3**      Tool Registry: config\_loader.py đọc tools.yaml → build ToolDefinition + dynamic handler; GET /tools; POST /tools/{name}/execute                     SE          *3 tools load đúng; curl test get\_customers OK*   **P0**
-  **3**      Tool Registry: KiotViet HTTP adapter dùng auth\_context.\_auth\_headers(); timeout=10s; retry=2; error mapping tiếng Việt                            SE          *Adapter test với mock server*                     **P0**
+  **3**      Tool Registry: HTTP adapter dùng auth\_context.\_auth\_headers(); timeout=10s; retry=2; error mapping tiếng Việt                            SE          *Adapter test với mock server*                     **P0**
   **4**      ToolRegistryClient (shared): get\_openai\_tools(namespace) convert sang OpenAI function format; execute(name, params) forward token qua header       AI          *Client test: tools load + execute mock tool*      **P0**
   **4**      Orchestrator LangGraph: OrchestratorState TypedDict, graph compile với nodes stub, Redis checkpointer, session manager                               AI          *Graph compile; state persist qua Redis*           **P0**
   **5**      Intent Classifier node: GPT-4o-mini, system prompt + 8 few-shot (order/bi/chitchat), structured output JSON, test 20 câu tiếng Việt                  AI          *Accuracy ≥ 90% trên 20 test cases*                **P0**
@@ -349,7 +349,7 @@ xong.
 
   ---------- ------------------------------------------------------------------------------------------------------------------------------------------- ----------- --------------------------------------------------- -------------
   **Ngày**   **Công việc**                                                                                                                               **Owner**   **Deliverable**                                     **Ưu tiên**
-  **8**      Product catalog loader: đọc products từ KiotViet API → normalize (lowercase, bỏ dấu câu, unicode NFC, alias mapping) → corpus text          SE          *ProductCatalog load \< 3s, normalize test*         **P0**
+  **8**      Product catalog loader: đọc products từ the API → normalize (lowercase, bỏ dấu câu, unicode NFC, alias mapping) → corpus text          SE          *ProductCatalog load \< 3s, normalize test*         **P0**
   **8**      FAISS embedding index: paraphrase-multilingual-MiniLM-L12-v2, benchmark recall\@3 trên 50 product name variations tiếng Việt                AI          *recall\@3 ≥ 90% trên test set*                     **P0**
   **9**      ProductMatcher: cosine search → threshold routing → (auto / llm-rerank / ask-user); auto-rebuild index mỗi 30 phút hoặc webhook             AI          *precision ≥ 85% trên 30 test queries*              **P0**
   **9**      VN text utils: số đếm chữ→số (một→1, mười hai→12\...), honorific strip (anh/chị/em/bác/cô/ông/bà), normalize whitespace, unicode NFC        AI          *unit test 50 cases, 100% pass*                     **P1**
@@ -369,7 +369,7 @@ xong.
 
 \# Lớp 1 --- Role + Rules (cố định)
 
-Bạn là Order Agent của hệ thống KiotViet. Tạo đơn hàng từ tiếng Việt tự
+Bạn là Order Agent của hệ thống. Tạo đơn hàng từ tiếng Việt tự
 nhiên.
 
 Quy trình BẮT BUỘC:

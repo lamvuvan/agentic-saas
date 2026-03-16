@@ -33,8 +33,8 @@ class TestApiBlock:
     def test_env_var_in_url_stored_as_template(self):
         from tool_registry.models import ApiBlock
 
-        block = ApiBlock(method="GET", url="${KIOTVIET_API_BASE}/customers")
-        assert "${KIOTVIET_API_BASE}" in block.url
+        block = ApiBlock(method="GET", url="${API_BASE}/customers")
+        assert "${API_BASE}" in block.url
 
 
 class TestHandlerRef:

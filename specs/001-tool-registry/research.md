@@ -66,7 +66,7 @@ either an `api` field or a `handler` field (mutually exclusive, validated at loa
   functions with signature `async def handler(params: dict, auth: AuthContext) -> dict`.
 
 **Rationale**: Both paths are needed for MVP: all customer/order tools use HTTP dispatch
-(KiotViet API), while `bi__run_query` requires direct asyncpg access. A unified dispatch
+(the API), while `bi__run_query` requires direct asyncpg access. A unified dispatch
 interface keeps `routers/tools.py` clean — it calls `dispatch(tool, params)` regardless
 of the underlying path.
 
@@ -132,7 +132,7 @@ OpenAI format at the registry avoids per-agent conversion logic.
 
 All three steps run in sequence; missing `response_path` returns the full response body.
 
-**Rationale**: Backend APIs (KiotViet) return responses with proprietary field names and
+**Rationale**: Backend APIs (the backend) return responses with proprietary field names and
 nested structures. Domain agents expect normalized field names. Keeping normalization in
 the registry config (YAML) means agents never need to know backend schema details.
 

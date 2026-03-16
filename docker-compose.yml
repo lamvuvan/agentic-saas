@@ -8,7 +8,7 @@ services:
     ports:
       - "${TOOL_REGISTRY_PORT:-8001}:8001"
     environment:
-      KIOTVIET_API_BASE: ${KIOTVIET_API_BASE}
+      API_BASE: ${API_BASE}
       DATABASE_URL: ${DATABASE_URL}
       TOOLS_YAML_PATH: /app/config/tools.yaml
       HOTRELOAD_INTERVAL_S: ${HOTRELOAD_INTERVAL_S:-1}
@@ -108,7 +108,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: redis:8.4
     ports:
       - "6379:6379"
     healthcheck:
@@ -119,7 +119,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:pg15
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password

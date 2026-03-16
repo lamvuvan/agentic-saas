@@ -83,7 +83,7 @@ Các biến bắt buộc:
 ```
 OPENAI_API_KEY=sk-...
 DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/analytics
-KIOTVIET_API_BASE=https://api.kiotviet.vn/v3
+API_BASE=https://api.example.com/v3
 ```
 
 ## Chạy nhanh

@@ -94,7 +94,7 @@
 
 ## Phase 5: User Story 2 — Order Creation via Natural Language (Priority: P1)
 
-**Goal**: Order Agent extracts Vietnamese order entities, matches products via FAISS, confirms with user, and submits to KiotViet via Tool Registry.
+**Goal**: Order Agent extracts Vietnamese order entities, matches products via FAISS, confirms with user, and submits to the backend via Tool Registry.
 
 **Independent Test**: Submit 20 NL order messages to Order Agent A2A endpoint. Verify ≥ 17/20 produce correct previews with right customer, products, quantities, and table. Verify confirmation interrupt triggers input-required status.
 
@@ -120,7 +120,7 @@
 - [x] T045 [US2] Build order_agent/graph.py: LangGraph StateGraph extract_entities→match_products→check_customer→build_preview→confirm→submit_order, interrupt_before=["submit_order"] for confirmation gate
 - [x] T046 [US2] Wire order_agent/graph.py into order_agent/a2a_server.py background task processor: on new task invoke graph, on continuation with task_id resume via ainvoke(None, {configurable: {thread_id: task_id}})
 
-**Checkpoint**: End-to-end order creation works — NL input → FAISS product match → preview → confirm → KiotViet order
+**Checkpoint**: End-to-end order creation works — NL input → FAISS product match → preview → confirm → the backend order
 
 ---
 

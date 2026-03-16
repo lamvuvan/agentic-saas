@@ -22,8 +22,8 @@ Contract tests MUST be written and confirmed failing before implementation begin
 
 - [x] T001 Create project directory structure: `tool_registry/`, `tool_registry/routers/`, `tool_registry/handlers/`, `shared/`, `config/`, `tests/001-tool-registry/contract/`, `tests/001-tool-registry/integration/`, `tests/001-tool-registry/unit/`
 - [x] T002 Create `pyproject.toml` with Python 3.12 dependencies: fastapi>=0.111, pydantic>=2, uvicorn[standard], httpx, watchdog, pyyaml, asyncpg, pytest, pytest-asyncio, respx, ruff
-- [x] T003 [P] Add `tool-registry` service to `docker-compose.yml`: image build, port 8001, env vars (`KIOTVIET_API_BASE`, `DATABASE_URL`, `TOOLS_YAML_PATH`), healthcheck `GET /health`
-- [x] T004 [P] Create `.env.example` with all required variables: `KIOTVIET_API_BASE`, `DATABASE_URL`, `TOOL_REGISTRY_PORT=8001`, `TOOLS_YAML_PATH=config/tools.yaml`, `HOTRELOAD_INTERVAL_S=1`
+- [x] T003 [P] Add `tool-registry` service to `docker-compose.yml`: image build, port 8001, env vars (`API_BASE`, `DATABASE_URL`, `TOOLS_YAML_PATH`), healthcheck `GET /health`
+- [x] T004 [P] Create `.env.example` with all required variables: `API_BASE`, `DATABASE_URL`, `TOOL_REGISTRY_PORT=8001`, `TOOLS_YAML_PATH=config/tools.yaml`, `HOTRELOAD_INTERVAL_S=1`
 - [x] T005 [P] Configure ruff in `pyproject.toml`: `target-version = "py312"`, `line-length = 100`, `select = ["E","F","I","UP"]`
 - [x] T006 Create `config/tools.yaml` with all 3 MVP tool definitions from `Agentic_WorkPlan_v2.md` §2.1: `customer__get_customers`, `customer__create_customer`, `order__create_order` (HTTP dispatch), `bi__run_query` (handler dispatch)
 
@@ -156,7 +156,7 @@ Contract tests MUST be written and confirmed failing before implementation begin
 **Purpose**: End-to-end validation, auth token safety audit, documentation
 
 - [x] T038 [P] Create `tests/001-tool-registry/integration/test_e2e_registry.py` — end-to-end test: load `config/tools.yaml` with all 3 namespaces via test client, `GET /tools` returns all tools in OpenAI format, execute each namespace tool against mocks, `GET /health` reports correct `tool_count=N`
-- [x] T039 Add `conftest.py` to `tests/001-tool-registry/` — shared fixtures: `async_client` (FastAPI `AsyncClient` with test app), `temp_tools_yaml` (temp file fixture), `mock_kiotviet_backend` (respx mock for KiotViet API base URL)
+- [x] T039 Add `conftest.py` to `tests/001-tool-registry/` — shared fixtures: `async_client` (FastAPI `AsyncClient` with test app), `temp_tools_yaml` (temp file fixture), `mock_api_backend` (respx mock for API base URL)
 - [x] T040 [P] Security audit: grep all log output in tests for any occurrence of the test Bearer token string; assert zero matches (token masking validation per FR-005)
 - [x] T041 [P] Validate `quickstart.md` curl examples against running test service — run each `curl` command from `specs/001-tool-registry/quickstart.md` sections 4, 5, 7 against the test client and confirm expected responses
 - [x] T042 Update `CLAUDE.md` between `<!-- MANUAL ADDITIONS START -->` and `<!-- MANUAL ADDITIONS END -->` with tool_registry service startup command and test command
@@ -246,7 +246,7 @@ Task T031: "Create tests/.../test_handler_dispatch.py"
 
 ### Sprint Alignment (Agentic_WorkPlan_v2.md)
 
-- **Day 3** deliverable: `GET /tools` working + `POST /tools/{name}/execute` for KiotViet tools → Phase 3 + 4 + 5 complete
+- **Day 3** deliverable: `GET /tools` working + `POST /tools/{name}/execute` for the backend tools → Phase 3 + 4 + 5 complete
 - **Day 4** deliverable: `ToolRegistryClient` shared lib → Phase 6 complete
 
 ---

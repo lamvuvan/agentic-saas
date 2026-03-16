@@ -13,7 +13,7 @@ tools:
         limit: { type: integer, default: 5 }
     api:
       method: GET
-      url: "${KIOTVIET_API_BASE}/customers"
+      url: "${API_BASE}/customers"
       params: { query: keyword, limit: pageSize }
       response_path: data
       response_rename: { contactNumber: phone, id: customer_id }
@@ -32,7 +32,7 @@ tools:
         address: { type: string }
     api:
       method: POST
-      url: "${KIOTVIET_API_BASE}/customers"
+      url: "${API_BASE}/customers"
       body_mapping: { name: name, phone: contactNumber, address: address }
       response_fields: [id, name, code]
 
@@ -63,7 +63,7 @@ tools:
         discount: { type: number, default: 0 }
     api:
       method: POST
-      url: "${KIOTVIET_API_BASE}/orders"
+      url: "${API_BASE}/orders"
       body_mapping:
         customer_id: customerId
         items: orderDetails

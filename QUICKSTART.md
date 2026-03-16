@@ -5,7 +5,7 @@
 - Docker & Docker Compose
 - Python 3.12+ (để chạy local hoặc tests)
 - OpenAI API key
-- KiotViet API access
+- API access
 
 ---
 
@@ -19,7 +19,7 @@ Chỉnh sửa `.env`, điền các giá trị bắt buộc:
 
 ```bash
 OPENAI_API_KEY=sk-...
-KIOTVIET_API_BASE=https://api.kiotviet.vn/v3
+API_BASE=https://api.example.com/v3
 DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/analytics
 ```
 
@@ -178,7 +178,7 @@ User: "cho tôi 2 ly cà phê đen bàn 3"
 
 User: "đúng rồi, xác nhận"
   → Orchestrator gửi continuation task_id
-  → Order Agent resume: submit order → Tool Registry → KiotViet
+  → Order Agent resume: submit order → Tool Registry
   → Trả về order_code
 ```
 

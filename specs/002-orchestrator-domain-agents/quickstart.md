@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - Docker Compose with all 6 services: orchestrator, tool-registry, order-agent, bi-agent, redis, postgres
-- `.env` with: `OPENAI_API_KEY`, `KIOTVIET_API_BASE`, `DATABASE_URL`, `TOOL_REGISTRY_URL=http://tool-registry:8001`
+- `.env` with: `OPENAI_API_KEY`, `API_BASE`, `DATABASE_URL`, `TOOL_REGISTRY_URL=http://tool-registry:8001`
 - Tool Registry (feature 001) deployed and healthy
 
 ---
@@ -197,7 +197,7 @@ pytest tests/002-orchestrator-domain-agents/integration/ -v
 | `TOOL_REGISTRY_URL` | orchestrator, agents | Tool Registry base URL |
 | `REDIS_URL` | all | Redis connection string |
 | `DATABASE_URL` | bi-agent | PostgreSQL analytics DB |
-| `KIOTVIET_API_BASE` | tool-registry | KiotViet API base URL |
+| `API_BASE` | tool-registry | API base URL |
 | `ORDER_AGENT_URL` | orchestrator | Order Agent A2A URL |
 | `BI_AGENT_URL` | orchestrator | BI Agent A2A URL |
 | `OPENAI_MODEL_FAST` | all | Fast model name (default: gpt-4o-mini) |
