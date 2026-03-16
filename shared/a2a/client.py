@@ -89,7 +89,8 @@ async def poll_task(
                 timeout=10.0,
             )
             resp.raise_for_status()
-            task = A2ATask.model_validate(resp.json())
+            # GET endpoint returns only status fields (skill/params omitted)
+            task = A2ATask.model_validate({"skill": "", "params": {}, **resp.json()})
 
             if task.status in (
                 TaskStatus.COMPLETED,

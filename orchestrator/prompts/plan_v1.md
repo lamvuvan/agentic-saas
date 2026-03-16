@@ -21,7 +21,7 @@ Each step object:
 - `step_id`: "step-1", "step-2", etc.
 - `agent`: "order-agent" or "bi-agent"
 - `skill`: skill name matching the Agent Card
-- `params`: object with `message` (user's message) and `session_id`
+- `params`: always use the string `"injected_by_orchestrator"` — params are filled in automatically, do not set values here
 - `depends_on`: array of step_ids this step waits for (usually empty for MVP sequential plan)
 - `status`: always "pending" for new plans
 
@@ -39,7 +39,7 @@ Intent: order | Message: anh Lâm hai trứng lộn
       "step_id": "step-1",
       "agent": "order-agent",
       "skill": "create_order",
-      "params": {"message": "anh Lâm hai trứng lộn", "session_id": "PLACEHOLDER"},
+      "params": "injected_by_orchestrator",
       "depends_on": [],
       "status": "pending"
     }
@@ -57,7 +57,7 @@ Intent: bi_query | Message: doanh thu hôm nay
       "step_id": "step-1",
       "agent": "bi-agent",
       "skill": "bi_query",
-      "params": {"message": "doanh thu hôm nay", "session_id": "PLACEHOLDER"},
+      "params": "injected_by_orchestrator",
       "depends_on": [],
       "status": "pending"
     }

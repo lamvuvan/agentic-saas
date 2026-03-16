@@ -109,15 +109,10 @@ async def generate_plan(
                         "depends_on": [], "status": "pending"}],
         }
 
-    # params may be a JSON-encoded string (Structured Outputs workaround) — parse it
+    # Always override params with the actual message + session_id —
+    # GPT params output is unreliable (may contain "PLACEHOLDER" or wrong values).
     for step in raw.get("steps", []):
-        p = step.get("params", {})
-        if isinstance(p, str):
-            try:
-                step["params"] = json.loads(p)
-            except (json.JSONDecodeError, ValueError):
-                step["params"] = {}
-        step["params"]["session_id"] = session_id
+        step["params"] = {"message": message, "session_id": session_id}
 
     plan = ExecutionPlan(
         plan_id=str(uuid.uuid4()),
