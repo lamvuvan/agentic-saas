@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bi-agent/response",
+  "title": "BI Agent — A2A Result Output Schema",
+  "description": "Schema for the 'output' field in A2AResult when BI Agent task completes.",
+  "version": "1.0.0",
+
+  "skill": "bi_query",
+
+  "output_schema": {
+    "type": "object",
+    "required": ["status", "message"],
+    "properties": {
+      "status": {
+        "type": "string",
+        "enum": ["success", "rejected", "error"],
+        "description": "Query execution status"
+      },
+      "message": {
+        "type": "string",
+        "description": "Human-readable answer formatted for the user (Vietnamese)"
+      },
+      "generated_sql": {
+        "type": "string",
+        "description": "SQL query that was executed (for transparency). Present when status = success."
+      },
+      "row_count": {
+        "type": "integer",
+        "description": "Number of result rows returned"
+      },
+      "limit_applied": {
+        "type": "boolean",
+        "description": "True if automatic LIMIT was injected into the query"
+      },
+      "data": {
+        "type": "array",
+        "description": "Raw result rows as objects. Present when status = success and row_count > 0.",
+        "items": { "type": "object", "additionalProperties": true },
+        "maxItems": 500
+      },
+      "error_reason": {
+        "type": "string",
+        "description": "Present when status = rejected or error. English description of why the query was rejected or failed."
+      }
+    }
+  },
+
+  "examples": [
+    {
+      "status": "success",
+      "message": "Doanh thu hôm nay: 2,850,000đ từ 23 đơn hàng.",
+      "generated_sql": "SELECT SUM(total) as revenue, COUNT(*) as order_count FROM orders WHERE DATE(created_at) = CURRENT_DATE LIMIT 100",
+      "row_count": 1,
+      "limit_applied": false,
+      "data": [{ "revenue": 2850000, "order_count": 23 }]
+    },
+    {
+      "status": "rejected",
+      "message": "Tôi chỉ có thể truy vấn dữ liệu, không thể sửa đổi. Vui lòng thử lại với câu hỏi khác.",
+      "error_reason": "Non-SELECT SQL rejected: DELETE statement detected"
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator/voice",
+  "title": "POST /voice — Request & Response Contract",
+  "description": "Voice input endpoint. Accepts audio file, transcribes to text via STT, then processes identically to POST /chat.",
+  "version": "1.0.0",
+
+  "request": {
+    "method": "POST",
+    "path": "/voice",
+    "headers": {
+      "Authorization": { "type": "string", "required": false },
+      "X-Session-Id": { "type": "string", "required": false },
+      "Content-Type": { "type": "string", "enum": ["multipart/form-data"], "required": true }
+    },
+    "body_schema": {
+      "type": "object",
+      "required": ["audio"],
+      "properties": {
+        "audio": {
+          "type": "string",
+          "format": "binary",
+          "description": "Audio file (WAV, MP3, M4A, OGG). Max 60 seconds."
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Optional session ID for conversation continuity"
+        }
+      }
+    }
+  },
+
+  "response": {
+    "200": {
+      "description": "Audio transcribed and message processed",
+      "schema": {
+        "type": "object",
+        "required": ["session_id", "reply", "transcription", "intent", "trace_id"],
+        "properties": {
+          "session_id": { "type": "string" },
+          "transcription": {
+            "type": "string",
+            "description": "The STT transcription of the audio input"
+          },
+          "reply": { "type": "string" },
+          "intent": { "type": "string", "enum": ["order", "bi_query", "chitchat", "unknown"] },
+          "trace_id": { "type": "string" },
+          "requires_input": { "type": "boolean", "default": false },
+          "metadata": {
+            "type": "object",
+            "required": ["duration_ms", "transcription_duration_ms"],
+            "properties": {
+              "duration_ms": { "type": "integer" },
+              "transcription_duration_ms": { "type": "integer" },
+              "audio_duration_s": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
+
+    "422": {
+      "description": "Audio too long, unsupported format, or transcription failed",
+      "schema": {
+        "type": "object",
+        "required": ["error", "error_code"],
+        "properties": {
+          "error": { "type": "string" },
+          "error_code": {
+            "type": "string",
+            "enum": ["AUDIO_TOO_LONG", "UNSUPPORTED_FORMAT", "TRANSCRIPTION_FAILED"]
+          }
+        }
+      }
+    }
+  },
+
+  "constraints": [
+    "Maximum audio duration: 60 seconds",
+    "Supported formats: WAV, MP3, M4A, OGG",
+    "Audio is normalized to 16kHz mono before transcription",
+    "Transcription failures return 422, not 500 — user can retry"
+  ]
+}

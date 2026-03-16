@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "order-agent/response",
+  "title": "Order Agent — A2A Result Output Schema",
+  "description": "Schema for the 'output' field in A2AResult when Order Agent task completes.",
+  "version": "1.0.0",
+
+  "skill": "create_order",
+
+  "output_schema": {
+    "type": "object",
+    "required": ["status", "message"],
+    "properties": {
+      "status": {
+        "type": "string",
+        "enum": ["preview", "confirmed", "cancelled", "error"],
+        "description": "Final status of the order flow"
+      },
+      "message": {
+        "type": "string",
+        "description": "Human-readable response to relay to the user (Vietnamese)"
+      },
+      "order_draft": {
+        "type": "object",
+        "description": "Present when status = preview (awaiting confirmation)",
+        "required": ["items"],
+        "properties": {
+          "customer_name": { "type": "string" },
+          "customer_id": { "type": "string", "nullable": true },
+          "table_number": { "type": "string", "nullable": true },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["product_name", "quantity", "price"],
+              "properties": {
+                "product_id": { "type": "string" },
+                "product_name": { "type": "string" },
+                "quantity": { "type": "integer", "minimum": 1 },
+                "price": { "type": "number" },
+                "note": { "type": "string", "nullable": true }
+              }
+            }
+          },
+          "total_estimate": { "type": "number" },
+          "discount": { "type": "number", "default": 0 }
+        }
+      },
+      "order_result": {
+        "type": "object",
+        "description": "Present when status = confirmed (order submitted successfully)",
+        "required": ["order_id", "order_code"],
+        "properties": {
+          "order_id": { "type": "string" },
+          "order_code": { "type": "string" },
+          "total": { "type": "number" },
+          "status_value": { "type": "string" }
+        }
+      },
+      "unresolved_items": {
+        "type": "array",
+        "description": "Items that could not be matched and require user clarification",
+        "items": {
+          "type": "object",
+          "required": ["product_query", "candidates"],
+          "properties": {
+            "product_query": { "type": "string" },
+            "candidates": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["product_id", "product_name"],
+                "properties": {
+                  "product_id": { "type": "string" },
+                  "product_name": { "type": "string" },
+                  "price": { "type": "number" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  "examples": [
+    {
+      "status": "preview",
+      "message": "Đơn hàng cho anh Lâm: bàn 3, 2 trứng lộn (20,000đ), 1 cháo lòng (25,000đ). Tổng: 45,000đ. Xác nhận không?",
+      "order_draft": {
+        "customer_name": "Lâm",
+        "customer_id": "12345",
+        "table_number": "3",
+        "items": [
+          { "product_id": "p001", "product_name": "Trứng lộn", "quantity": 2, "price": 10000 },
+          { "product_id": "p002", "product_name": "Cháo lòng", "quantity": 1, "price": 25000 }
+        ],
+        "total_estimate": 45000,
+        "discount": 0
+      }
+    },
+    {
+      "status": "confirmed",
+      "message": "Đã tạo đơn hàng thành công! Mã đơn: ORD-00123. Tổng: 45,000đ.",
+      "order_result": {
+        "order_id": "ord-abc",
+        "order_code": "ORD-00123",
+        "total": 45000,
+        "status_value": "Đang xử lý"
+      }
+    }
+  ]
+}

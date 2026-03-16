@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tool-registry/health",
+  "title": "GET /health — Response Contract",
+  "description": "Service health and config-load status. Used by Docker Compose healthcheck and Orchestrator dependency gating.",
+  "version": "1.0.0",
+
+  "request": {
+    "method": "GET",
+    "path": "/health",
+    "headers": {},
+    "body": null
+  },
+
+  "response": {
+    "200": {
+      "description": "Service healthy — tools loaded successfully",
+      "content_type": "application/json",
+      "schema": {
+        "type": "object",
+        "required": ["status", "tool_count", "config_path", "last_reload"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["healthy"],
+            "description": "Service is running and all tools are loaded"
+          },
+          "tool_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of tools currently loaded from config"
+          },
+          "config_path": {
+            "type": "string",
+            "description": "Absolute path to the tools.yaml file being watched"
+          },
+          "last_reload": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601 timestamp of last successful config load or hot-reload"
+          }
+        },
+        "examples": [
+          {
+            "status": "healthy",
+            "tool_count": 5,
+            "config_path": "/app/config/tools.yaml",
+            "last_reload": "2026-03-16T08:00:01.234Z"
+          }
+        ]
+      }
+    },
+
+    "503": {
+      "description": "Service degraded — config load failed or tools.yaml is invalid",
+      "content_type": "application/json",
+      "schema": {
+        "type": "object",
+        "required": ["status", "error"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["degraded"]
+          },
+          "error": {
+            "type": "string",
+            "description": "English description of the config error"
+          },
+          "tool_count": {
+            "type": "integer",
+            "description": "Number of tools from last valid load (may be 0 on startup failure)"
+          },
+          "last_reload": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "ISO 8601 timestamp of last successful reload, or null if startup failed"
+          }
+        }
+      }
+    }
+  }
+}

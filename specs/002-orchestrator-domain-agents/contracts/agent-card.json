@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-card",
+  "title": "Agent Card Schema — /.well-known/agent.json",
+  "description": "Schema for A2A Agent Cards. Each service must publish this at /.well-known/agent.json.",
+  "version": "1.0.0",
+
+  "schema": {
+    "type": "object",
+    "required": ["name", "version", "role", "url", "skills", "securitySchemes"],
+    "properties": {
+      "name": { "type": "string" },
+      "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+      "role": { "type": "string", "enum": ["orchestrator", "domain"] },
+      "domain": {
+        "type": "string",
+        "description": "Required when role = domain. Declares the domain scope.",
+        "examples": ["order", "bi"]
+      },
+      "url": { "type": "string", "format": "uri" },
+      "description": { "type": "string" },
+      "skills": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": ["id", "description"],
+          "properties": {
+            "id": { "type": "string" },
+            "description": { "type": "string" },
+            "inputModes": { "type": "array", "items": { "type": "string" } },
+            "outputModes": { "type": "array", "items": { "type": "string" } },
+            "deprecated": { "type": "boolean", "default": false },
+            "sunset_date": { "type": "string", "format": "date", "description": "If deprecated, when this skill will be removed" }
+          }
+        }
+      },
+      "securitySchemes": {
+        "type": "object",
+        "properties": {
+          "bearer": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string", "enum": ["http"] },
+              "scheme": { "type": "string", "enum": ["bearer"] }
+            }
+          }
+        }
+      },
+      "slo": {
+        "type": "object",
+        "description": "Service Level Objectives declared by this agent",
+        "properties": {
+          "p95_latency_ms": { "type": "integer" },
+          "availability_pct": { "type": "number", "minimum": 0, "maximum": 100 }
+        }
+      }
+    }
+  },
+
+  "examples": {
+    "orchestrator": {
+      "name": "Orchestrator",
+      "version": "1.0.0",
+      "role": "orchestrator",
+      "url": "http://orchestrator:8000",
+      "description": "Classifies intent, plans execution, delegates to Domain Agents via A2A",
+      "skills": [
+        { "id": "chat", "description": "Process natural language messages and route to Domain Agents", "inputModes": ["text", "audio"], "outputModes": ["text"] }
+      ],
+      "securitySchemes": { "bearer": { "type": "http", "scheme": "bearer" } },
+      "slo": { "p95_latency_ms": 3000, "availability_pct": 99.0 }
+    },
+    "order_agent": {
+      "name": "Order Agent",
+      "version": "1.0.0",
+      "role": "domain",
+      "domain": "order",
+      "url": "http://order-agent:8002",
+      "description": "Creates customer orders from Vietnamese natural language input via ReAct reasoning loop",
+      "skills": [
+        { "id": "create_order", "description": "Extract entities, match products, confirm with user, submit order", "inputModes": ["text"], "outputModes": ["text"] }
+      ],
+      "securitySchemes": { "bearer": { "type": "http", "scheme": "bearer" } },
+      "slo": { "p95_latency_ms": 3000, "availability_pct": 99.0 }
+    },
+    "bi_agent": {
+      "name": "BI Agent",
+      "version": "1.0.0",
+      "role": "domain",
+      "domain": "bi",
+      "url": "http://bi-agent:8003",
+      "description": "Answers business intelligence questions by translating Vietnamese to SQL and formatting results",
+      "skills": [
+        { "id": "bi_query", "description": "Translate Vietnamese question to SQL, execute on analytics DB, format human-readable answer", "inputModes": ["text"], "outputModes": ["text"] }
+      ],
+      "securitySchemes": { "bearer": { "type": "http", "scheme": "bearer" } },
+      "slo": { "p95_latency_ms": 5000, "availability_pct": 99.0 }
+    }
+  }
+}

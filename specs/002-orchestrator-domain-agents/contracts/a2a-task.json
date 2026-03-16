@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator/a2a-task",
+  "title": "A2A Task Protocol — Request & Response Contract",
+  "description": "Shared A2A protocol contract for all Domain Agents. Implements submit + poll pattern.",
+  "version": "1.0.0",
+
+  "endpoints": {
+    "submit": {
+      "method": "POST",
+      "path": "/a2a/tasks",
+      "description": "Submit a task to the Domain Agent. Returns task ID immediately.",
+      "request": {
+        "headers": {
+          "Authorization": {
+            "type": "string",
+            "required": false,
+            "description": "Bearer token forwarded from original caller. MUST NOT be stored."
+          },
+          "X-Trace-Id": {
+            "type": "string",
+            "required": false,
+            "description": "Distributed trace ID. Generated if absent."
+          }
+        },
+        "body_schema": {
+          "type": "object",
+          "required": ["skill", "params"],
+          "properties": {
+            "skill": {
+              "type": "string",
+              "description": "Skill identifier. Must match a skill declared in the Agent Card.",
+              "examples": ["create_order", "bi_query"]
+            },
+            "params": {
+              "type": "object",
+              "required": ["message", "session_id"],
+              "properties": {
+                "message": {
+                  "type": "string",
+                  "description": "User's natural language input for this task"
+                },
+                "session_id": {
+                  "type": "string",
+                  "description": "Session ID for conversation state continuity"
+                },
+                "continuation": {
+                  "type": "object",
+                  "description": "Present when resuming a task that was in input-required state",
+                  "properties": {
+                    "task_id": { "type": "string", "description": "Task ID to resume" },
+                    "user_input": { "type": "string", "description": "User's response to the input-required prompt" }
+                  }
+                }
+              },
+              "additionalProperties": true
+            }
+          }
+        }
+      },
+      "response": {
+        "202": {
+          "description": "Task accepted. Poll GET /a2a/tasks/{task_id} for status.",
+          "schema": {
+            "type": "object",
+            "required": ["task_id", "status"],
+            "properties": {
+              "task_id": { "type": "string", "description": "Unique task identifier (UUID v4)" },
+              "status": { "type": "string", "enum": ["submitted"] }
+            }
+          }
+        }
+      }
+    },
+
+    "poll": {
+      "method": "GET",
+      "path": "/a2a/tasks/{task_id}",
+      "description": "Poll task status. Returns result when completed.",
+      "response": {
+        "200": {
+          "description": "Task status and result (if completed)",
+          "schema": {
+            "type": "object",
+            "required": ["task_id", "status"],
+            "properties": {
+              "task_id": { "type": "string" },
+              "status": {
+                "type": "string",
+                "enum": ["submitted", "working", "completed", "failed", "timeout", "input-required"],
+                "description": "Current task status"
+              },
+              "result": {
+                "$ref": "#/definitions/A2AResult",
+                "description": "Present when status = completed"
+              },
+              "error": {
+                "type": "string",
+                "description": "English error message. Present when status = failed or timeout."
+              },
+              "input_request": {
+                "type": "string",
+                "description": "Prompt to relay to the user. Present when status = input-required."
+              },
+              "created_at": { "type": "string", "format": "date-time" },
+              "updated_at": { "type": "string", "format": "date-time" }
+            }
+          }
+        },
+        "404": {
+          "description": "Task ID not found or expired",
+          "schema": {
+            "type": "object",
+            "required": ["error"],
+            "properties": {
+              "error": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  "definitions": {
+    "A2AResult": {
+      "type": "object",
+      "required": ["output", "reasoning_summary"],
+      "properties": {
+        "output": {
+          "description": "Domain-specific result payload. See domain-specific contracts for schema.",
+          "oneOf": [{ "type": "object" }, { "type": "string" }]
+        },
+        "reasoning_summary": {
+          "type": "string",
+          "description": "Brief natural-language explanation of the Domain Agent's decisions. Required by Constitution §Agent Role Taxonomy."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Agent's confidence in the result (0.0–1.0). Null if not applicable."
+        },
+        "tool_calls": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Names of Tool Registry tools invoked during execution"
+        }
+      }
+    }
+  },
+
+  "task_lifecycle": {
+    "states": ["submitted", "working", "completed", "failed", "timeout", "input-required"],
+    "transitions": {
+      "submitted": ["working"],
+      "working": ["completed", "failed", "timeout", "input-required"],
+      "input-required": ["working"],
+      "completed": [],
+      "failed": [],
+      "timeout": []
+    },
+    "polling_guidance": {
+      "interval_ms": 500,
+      "max_wait_ms": 30000,
+      "on_timeout": "Return 504 AGENT_TIMEOUT to caller"
+    }
+  },
+
+  "security_constraints": [
+    "Authorization header MUST NOT appear in any log output",
+    "Authorization header MUST NOT be stored in the task record",
+    "Task IDs MUST be unguessable (UUID v4)",
+    "Task results MUST expire after 1 hour"
+  ]
+}
