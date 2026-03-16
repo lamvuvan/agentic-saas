@@ -1,0 +1,209 @@
+# Eval suite: entity_extraction
+# 20 Vietnamese NL order inputs with expected entities
+# Pass threshold: ≥17/20
+
+cases:
+  - id: EE-01
+    input:
+      message: "cho tôi 2 ly cà phê sữa, bàn 5"
+    expected:
+      customer_honorific: null
+      table_number: "5"
+      items:
+        - product_query: "cà phê sữa"
+          quantity: 2
+
+  - id: EE-02
+    input:
+      message: "anh Minh đặt 1 tô phở bò, bàn 12"
+    expected:
+      customer_name: "Minh"
+      customer_honorific: "anh"
+      table_number: "12"
+      items:
+        - product_query: "phở bò"
+          quantity: 1
+
+  - id: EE-03
+    input:
+      message: "chị ơi 3 bánh mì thịt cho bàn vip nhé"
+    expected:
+      table_number: "vip"
+      items:
+        - product_query: "bánh mì thịt"
+          quantity: 3
+
+  - id: EE-04
+    input:
+      message: "bà Lan order 5 hộp cơm tấm sườn"
+    expected:
+      customer_name: "Lan"
+      customer_honorific: "bà"
+      items:
+        - product_query: "cơm tấm sườn"
+          quantity: 5
+
+  - id: EE-05
+    input:
+      message: "2 ly nước cam ép không đường và 1 bánh flan, bàn 3"
+    expected:
+      table_number: "3"
+      items:
+        - product_query: "nước cam ép"
+          quantity: 2
+        - product_query: "bánh flan"
+          quantity: 1
+
+  - id: EE-06
+    input:
+      message: "em cần thêm mười tô bún bò vào đơn bàn 8"
+    expected:
+      table_number: "8"
+      intent_modifier: "add"
+      items:
+        - product_query: "bún bò"
+          quantity: 10
+
+  - id: EE-07
+    input:
+      message: "ông Tú đặt mười hai suất ăn trưa"
+    expected:
+      customer_name: "Tú"
+      customer_honorific: "ông"
+      items:
+        - product_query: "suất ăn trưa"
+          quantity: 12
+
+  - id: EE-08
+    input:
+      message: "cô Hoa 4 ly trà sữa trân châu, ít đường"
+    expected:
+      customer_name: "Hoa"
+      customer_honorific: "cô"
+      items:
+        - product_query: "trà sữa trân châu"
+          quantity: 4
+          note: "ít đường"
+
+  - id: EE-09
+    input:
+      message: "bàn 2: 1 phần lẩu thái, 2 đĩa rau muống xào, 3 lon bia"
+    expected:
+      table_number: "2"
+      items:
+        - product_query: "lẩu thái"
+          quantity: 1
+        - product_query: "rau muống xào"
+          quantity: 2
+        - product_query: "bia"
+          quantity: 3
+
+  - id: EE-10
+    input:
+      message: "chú Bình huỷ đơn cũ"
+    expected:
+      customer_name: "Bình"
+      customer_honorific: "chú"
+      intent_modifier: "cancel"
+
+  - id: EE-11
+    input:
+      message: "3 ly cà phê đen nóng không đường, 1 cái croissant, bàn 6"
+    expected:
+      table_number: "6"
+      items:
+        - product_query: "cà phê đen"
+          quantity: 3
+          note: "nóng không đường"
+        - product_query: "croissant"
+          quantity: 1
+
+  - id: EE-12
+    input:
+      message: "bác Hai thêm 2 tô bún thịt nướng vào đơn bàn 10"
+    expected:
+      customer_name: "Hai"
+      customer_honorific: "bác"
+      table_number: "10"
+      intent_modifier: "add"
+      items:
+        - product_query: "bún thịt nướng"
+          quantity: 2
+
+  - id: EE-13
+    input:
+      message: "hai mươi phần cơm văn phòng cho khách sỉ"
+    expected:
+      items:
+        - product_query: "cơm văn phòng"
+          quantity: 20
+
+  - id: EE-14
+    input:
+      message: "cho bàn 4 một tô phở tái, thêm hành và giá"
+    expected:
+      table_number: "4"
+      items:
+        - product_query: "phở tái"
+          quantity: 1
+          note: "thêm hành và giá"
+
+  - id: EE-15
+    input:
+      message: "anh Đức bỏ 1 ly sinh tố khỏi đơn"
+    expected:
+      customer_name: "Đức"
+      customer_honorific: "anh"
+      intent_modifier: "remove"
+      items:
+        - product_query: "sinh tố"
+          quantity: 1
+
+  - id: EE-16
+    input:
+      message: "em đặt một phần bánh xèo, bàn 11, không hành"
+    expected:
+      table_number: "11"
+      items:
+        - product_query: "bánh xèo"
+          quantity: 1
+          note: "không hành"
+
+  - id: EE-17
+    input:
+      message: "chị Nga order 6 ly nước mía"
+    expected:
+      customer_name: "Nga"
+      customer_honorific: "chị"
+      items:
+        - product_query: "nước mía"
+          quantity: 6
+
+  - id: EE-18
+    input:
+      message: "bàn 15: 2 tô mì hải sản, 4 lon nước ngọt"
+    expected:
+      table_number: "15"
+      items:
+        - product_query: "mì hải sản"
+          quantity: 2
+        - product_query: "nước ngọt"
+          quantity: 4
+
+  - id: EE-19
+    input:
+      message: "ông Phúc hỏi giá cà phê"
+    expected:
+      customer_name: "Phúc"
+      customer_honorific: "ông"
+      intent_modifier: "new"
+
+  - id: EE-20
+    input:
+      message: "thêm năm phần cơm chiên dương châu cho bàn 7"
+    expected:
+      table_number: "7"
+      intent_modifier: "add"
+      items:
+        - product_query: "cơm chiên dương châu"
+          quantity: 5

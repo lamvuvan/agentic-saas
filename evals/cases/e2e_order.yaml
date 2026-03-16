@@ -1,0 +1,201 @@
+# Eval suite: e2e_order
+# 20 multi-turn order conversations with expected outcomes
+# Pass threshold: ≥15/20
+
+cases:
+  - id: E2E-01
+    input:
+      turns:
+        - message: "cho tôi 2 ly cà phê sữa, bàn 5"
+        - message: "xác nhận"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-02
+    input:
+      turns:
+        - message: "anh Minh đặt 1 tô phở bò, bàn 12"
+        - message: "xác nhận đơn"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-03
+    input:
+      turns:
+        - message: "3 bánh mì thịt, bàn 2"
+        - message: "huỷ"
+          continuation: true
+    expected:
+      final_status: cancelled
+
+  - id: E2E-04
+    input:
+      turns:
+        - message: "bàn 7: 2 ly trà đào, 1 bánh kem dâu"
+        - message: "ok xác nhận"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-05
+    input:
+      turns:
+        - message: "chị Hoa đặt 5 hộp cơm văn phòng"
+        - message: "đồng ý"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-06
+    input:
+      turns:
+        - message: "bàn 3: 1 set lẩu thái, 4 lon bia"
+        - message: "không xác nhận"
+          continuation: true
+    expected:
+      final_status: cancelled
+
+  - id: E2E-07
+    input:
+      turns:
+        - message: "ông Phúc order 10 suất cơm tấm sườn bì"
+        - message: "xác nhận"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-08
+    input:
+      turns:
+        - message: "2 tô bún bò huế, bàn 8, không hành"
+        - message: "confirm"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-09
+    input:
+      turns:
+        - message: "bàn 11: 6 ly sinh tố xoài, 3 bánh mì que"
+        - message: "ok nhé"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-10
+    input:
+      turns:
+        - message: "bác Hai order 2 phần mì xào hải sản"
+        - message: "thôi huỷ đi"
+          continuation: true
+    expected:
+      final_status: cancelled
+
+  - id: E2E-11
+    input:
+      turns:
+        - message: "1 hộp bánh cookies, bàn vip"
+        - message: "xác nhận"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-12
+    input:
+      turns:
+        - message: "anh Đức đặt 4 ly cà phê đen nóng, bàn 1"
+        - message: "yes"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-13
+    input:
+      turns:
+        - message: "3 hộp cơm chiên dương châu, bàn 6"
+        - message: "đúng rồi, đặt đi"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-14
+    input:
+      turns:
+        - message: "chú Bình order 2 tô phở gà cho bàn 9"
+        - message: "cho tôi thêm 1 tô nữa"
+          continuation: false
+        - message: "xác nhận"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-15
+    input:
+      turns:
+        - message: "bàn 4: 1 phần cơm rang hải sản"
+        - message: "bỏ ra"
+          continuation: true
+    expected:
+      final_status: cancelled
+
+  - id: E2E-16
+    input:
+      turns:
+        - message: "em cần 2 ly nước dừa tươi, bàn 13"
+        - message: "ok"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-17
+    input:
+      turns:
+        - message: "cô Lan đặt 8 hộp sữa chua trái cây"
+        - message: "xác nhận giúp"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-18
+    input:
+      turns:
+        - message: "bàn 14: 2 tô mì bò kho, 2 phần chả giò"
+        - message: "đồng ý hết"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed
+
+  - id: E2E-19
+    input:
+      turns:
+        - message: "4 ly trà sữa matcha, bàn 16"
+        - message: "không đặt nữa"
+          continuation: true
+    expected:
+      final_status: cancelled
+
+  - id: E2E-20
+    input:
+      turns:
+        - message: "anh Tuấn order 3 suất lẩu riêu cua, bàn 2"
+        - message: "xác nhận"
+          continuation: true
+    expected:
+      order_code: true
+      final_status: completed

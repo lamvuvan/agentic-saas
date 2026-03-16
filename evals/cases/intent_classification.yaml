@@ -1,0 +1,128 @@
+# Eval suite: intent_classification
+# 20 cases: ≥6 order, ≥6 bi_query, ≥4 chitchat, ≥4 edge/ambiguous
+# Pass threshold: ≥18/20
+
+cases:
+  # --- Order intent (8 cases) ---
+  - id: IC-01
+    input:
+      message: "cho tôi order 2 ly cà phê sữa và 1 bánh mì cho bàn số 5"
+    expected:
+      intent: order
+
+  - id: IC-02
+    input:
+      message: "anh muốn đặt 3 tô phở bò cho bàn 12"
+    expected:
+      intent: order
+
+  - id: IC-03
+    input:
+      message: "chị ơi cho em 1 ly nước cam ép, không đường"
+    expected:
+      intent: order
+
+  - id: IC-04
+    input:
+      message: "thêm 2 cái bánh bao vào đơn của bàn 3 giúp mình nhé"
+    expected:
+      intent: order
+
+  - id: IC-05
+    input:
+      message: "Anh Hùng order 5 phần cơm tấm sườn bì chả"
+    expected:
+      intent: order
+
+  - id: IC-06
+    input:
+      message: "bàn 7 cần thêm 1 chai nước suối"
+    expected:
+      intent: order
+
+  - id: IC-07
+    input:
+      message: "cho tôi hủ tíu khô 2 tô, bàn 9"
+    expected:
+      intent: order
+
+  - id: IC-08
+    input:
+      message: "đặt giúp mình 1 set combo bữa trưa cho bàn vip"
+    expected:
+      intent: order
+
+  # --- BI query intent (6 cases) ---
+  - id: IC-09
+    input:
+      message: "doanh thu tháng này là bao nhiêu?"
+    expected:
+      intent: bi_query
+
+  - id: IC-10
+    input:
+      message: "khách hàng nào mua nhiều nhất trong tuần qua?"
+    expected:
+      intent: bi_query
+
+  - id: IC-11
+    input:
+      message: "liệt kê 10 sản phẩm bán chạy nhất tháng 3"
+    expected:
+      intent: bi_query
+
+  - id: IC-12
+    input:
+      message: "tổng số đơn hàng hôm nay là bao nhiêu?"
+    expected:
+      intent: bi_query
+
+  - id: IC-13
+    input:
+      message: "so sánh doanh thu tháng 1 và tháng 2 năm nay"
+    expected:
+      intent: bi_query
+
+  - id: IC-14
+    input:
+      message: "danh sách khách hàng có công nợ trên 5 triệu"
+    expected:
+      intent: bi_query
+
+  # --- Chitchat intent (4 cases) ---
+  - id: IC-15
+    input:
+      message: "xin chào!"
+    expected:
+      intent: chitchat
+
+  - id: IC-16
+    input:
+      message: "bạn có thể làm gì cho tôi?"
+    expected:
+      intent: chitchat
+
+  - id: IC-17
+    input:
+      message: "hôm nay thời tiết thế nào nhỉ"
+    expected:
+      intent: chitchat
+
+  - id: IC-18
+    input:
+      message: "cảm ơn bạn rất nhiều!"
+    expected:
+      intent: chitchat
+
+  # --- Edge / ambiguous (2 cases) ---
+  - id: IC-19
+    input:
+      message: "bàn 5"
+    expected:
+      intent: unknown
+
+  - id: IC-20
+    input:
+      message: "hủy"
+    expected:
+      intent: unknown

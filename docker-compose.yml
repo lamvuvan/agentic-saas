@@ -31,13 +31,27 @@ services:
       - "${ORCHESTRATOR_PORT:-8000}:8000"
     environment:
       TOOL_REGISTRY_URL: http://tool-registry:8001
+      ORDER_AGENT_URL: http://order-agent:8002
+      BI_AGENT_URL: http://bi-agent:8003
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL_FAST: ${OPENAI_MODEL_FAST:-gpt-4o-mini}
+      OPENAI_MODEL_SMART: ${OPENAI_MODEL_SMART:-gpt-4o}
+      A2A_POLL_INTERVAL_MS: ${A2A_POLL_INTERVAL_MS:-500}
+      A2A_TIMEOUT_MS: ${A2A_TIMEOUT_MS:-30000}
+    volumes:
+      - whisper_models:/models/whisper
     depends_on:
       tool-registry:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   order-agent:
@@ -48,10 +62,21 @@ services:
       - "${ORDER_AGENT_PORT:-8002}:8002"
     environment:
       TOOL_REGISTRY_URL: http://tool-registry:8001
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL_FAST: ${OPENAI_MODEL_FAST:-gpt-4o-mini}
+      OPENAI_MODEL_SMART: ${OPENAI_MODEL_SMART:-gpt-4o}
     depends_on:
       tool-registry:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   bi-agent:
@@ -62,13 +87,24 @@ services:
       - "${BI_AGENT_PORT:-8003}:8003"
     environment:
       TOOL_REGISTRY_URL: http://tool-registry:8001
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       DATABASE_URL: ${DATABASE_URL}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL_FAST: ${OPENAI_MODEL_FAST:-gpt-4o-mini}
+      OPENAI_MODEL_SMART: ${OPENAI_MODEL_SMART:-gpt-4o}
     depends_on:
       tool-registry:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   redis:
@@ -101,3 +137,4 @@ services:
 
 volumes:
   postgres_data:
+  whisper_models:

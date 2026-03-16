@@ -17,8 +17,14 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "openai>=1.30.0",
     "langchain>=0.2.0",
-    "langgraph>=0.1.0",
+    "langchain-openai>=0.1.0",
+    "langgraph>=0.2.0",
+    "langgraph-checkpoint-redis>=0.0.6",
     "redis>=5.0.0",
+    "sentence-transformers>=3.0.0",
+    "faiss-cpu>=1.8.0",
+    "faster-whisper>=1.0.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
@@ -45,8 +51,8 @@ select = ["E", "F", "I", "UP"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["tool_registry", "shared"]
+known-first-party = ["tool_registry", "shared", "orchestrator", "order_agent", "bi_agent"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["tool_registry*", "shared*"]
+include = ["tool_registry*", "shared*", "orchestrator*", "order_agent*", "bi_agent*"]

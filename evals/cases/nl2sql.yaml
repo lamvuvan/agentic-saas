@@ -1,0 +1,124 @@
+# Eval suite: nl2sql
+# 20 Vietnamese BI queries with expected SQL structure
+# Pass threshold: ≥16/20
+
+cases:
+  - id: NL-01
+    input:
+      message: "doanh thu tháng này là bao nhiêu?"
+    expected:
+      sql_contains: ["SELECT", "SUM", "orders"]
+
+  - id: NL-02
+    input:
+      message: "10 khách hàng mua nhiều nhất tháng qua?"
+    expected:
+      sql_contains: ["SELECT", "customers", "ORDER BY", "LIMIT"]
+
+  - id: NL-03
+    input:
+      message: "liệt kê 5 sản phẩm bán chạy nhất tuần này"
+    expected:
+      sql_contains: ["SELECT", "products", "ORDER BY", "LIMIT"]
+
+  - id: NL-04
+    input:
+      message: "tổng số đơn hàng hôm nay"
+    expected:
+      sql_contains: ["SELECT", "COUNT", "orders"]
+
+  - id: NL-05
+    input:
+      message: "doanh thu theo ngày trong tháng 3 năm 2025"
+    expected:
+      sql_contains: ["SELECT", "SUM", "GROUP BY", "orders"]
+
+  - id: NL-06
+    input:
+      message: "danh sách khách hàng có công nợ trên 5 triệu"
+    expected:
+      sql_contains: ["SELECT", "customers", "WHERE"]
+
+  - id: NL-07
+    input:
+      message: "sản phẩm nào chưa bán được trong tháng này?"
+    expected:
+      sql_contains: ["SELECT", "products"]
+
+  - id: NL-08
+    input:
+      message: "tổng doanh thu theo từng nhân viên bán hàng"
+    expected:
+      sql_contains: ["SELECT", "SUM", "GROUP BY"]
+
+  - id: NL-09
+    input:
+      message: "so sánh doanh thu tháng 1 và tháng 2"
+    expected:
+      sql_contains: ["SELECT", "SUM", "orders"]
+
+  - id: NL-10
+    input:
+      message: "đơn hàng nào bị huỷ trong tuần qua?"
+    expected:
+      sql_contains: ["SELECT", "orders", "WHERE"]
+
+  - id: NL-11
+    input:
+      message: "số lượng tồn kho hiện tại của sản phẩm cà phê"
+    expected:
+      sql_contains: ["SELECT", "inventory"]
+
+  - id: NL-12
+    input:
+      message: "doanh thu trung bình mỗi đơn hàng tháng này"
+    expected:
+      sql_contains: ["SELECT", "AVG", "orders"]
+
+  - id: NL-13
+    input:
+      message: "top 3 bàn có doanh thu cao nhất hôm nay"
+    expected:
+      sql_contains: ["SELECT", "ORDER BY", "LIMIT"]
+
+  - id: NL-14
+    input:
+      message: "bao nhiêu khách hàng mới trong tháng 3?"
+    expected:
+      sql_contains: ["SELECT", "COUNT", "customers"]
+
+  - id: NL-15
+    input:
+      message: "tổng chi phí nhập hàng tháng này"
+    expected:
+      sql_contains: ["SELECT", "SUM"]
+
+  - id: NL-16
+    input:
+      message: "danh sách đơn hàng chưa thanh toán"
+    expected:
+      sql_contains: ["SELECT", "orders", "WHERE"]
+
+  - id: NL-17
+    input:
+      message: "sản phẩm nào có margin cao nhất?"
+    expected:
+      sql_contains: ["SELECT", "products", "ORDER BY"]
+
+  - id: NL-18
+    input:
+      message: "doanh thu theo giờ trong ngày hôm qua"
+    expected:
+      sql_contains: ["SELECT", "SUM", "GROUP BY"]
+
+  - id: NL-19
+    input:
+      message: "tổng số khách hàng hiện tại"
+    expected:
+      sql_contains: ["SELECT", "COUNT", "customers"]
+
+  - id: NL-20
+    input:
+      message: "order_items bán nhiều nhất theo category"
+    expected:
+      sql_contains: ["SELECT", "order_items", "GROUP BY"]

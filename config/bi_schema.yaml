@@ -1,0 +1,64 @@
+# BI Agent Schema Configuration
+# Table allowlist and business glossary for NL2SQL prompt injection
+
+tables:
+  orders:
+    description: "Customer orders with status and total amount"
+    columns:
+      id: "INTEGER — unique order ID"
+      customer_id: "INTEGER — FK to customers.id"
+      table_number: "VARCHAR — table identifier"
+      total: "DECIMAL — order total in VND"
+      status: "VARCHAR — order status (pending, confirmed, cancelled)"
+      created_at: "TIMESTAMP — when order was placed"
+      notes: "TEXT — order notes"
+
+  customers:
+    description: "Customer profiles"
+    columns:
+      id: "INTEGER — unique customer ID"
+      name: "VARCHAR — customer display name"
+      phone: "VARCHAR — phone number"
+      debt: "DECIMAL — outstanding debt balance in VND"
+      created_at: "TIMESTAMP — registration date"
+
+  products:
+    description: "Product catalog with prices"
+    columns:
+      id: "INTEGER — unique product ID"
+      name: "VARCHAR — product name"
+      category: "VARCHAR — product category"
+      price: "DECIMAL — unit price in VND"
+      active: "BOOLEAN — whether product is currently available"
+
+  order_items:
+    description: "Line items within each order"
+    columns:
+      id: "INTEGER — unique line item ID"
+      order_id: "INTEGER — FK to orders.id"
+      product_id: "INTEGER — FK to products.id"
+      quantity: "INTEGER — quantity ordered"
+      price: "DECIMAL — price at time of order"
+      note: "TEXT — item-level note"
+
+  inventory:
+    description: "Current inventory stock levels"
+    columns:
+      product_id: "INTEGER — FK to products.id"
+      quantity: "INTEGER — units in stock"
+      updated_at: "TIMESTAMP — last update time"
+
+glossary:
+  doanh thu: "revenue — use SUM(orders.total) WHERE status != 'cancelled'"
+  công nợ: "debt — use customers.debt column"
+  khách hàng: "customer — customers table"
+  đơn hàng: "order — orders table"
+  sản phẩm: "product — products table"
+  tháng này: "this month — DATE_TRUNC('month', CURRENT_DATE) to end of month"
+  hôm nay: "today — DATE(created_at) = CURRENT_DATE"
+  tuần này: "this week — DATE_TRUNC('week', CURRENT_DATE)"
+  top N: "ORDER BY [metric] DESC LIMIT N"
+  bán chạy: "best-selling — ORDER BY SUM(order_items.quantity) DESC"
+
+# Maximum result rows — enforced by safety_check.py
+max_rows: 500
