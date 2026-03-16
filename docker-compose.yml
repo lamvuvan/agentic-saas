@@ -111,6 +111,9 @@ services:
     image: redis:8.4
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -138,3 +141,4 @@ services:
 volumes:
   postgres_data:
   whisper_models:
+  redis_data:
