@@ -40,7 +40,15 @@ async def lifespan(app: FastAPI):
 
     await setup_checkpointer(redis_url)
 
+    # Initialize AgentRegistry — fetch Domain Agent cards at startup
+    from orchestrator.agent_registry import AgentRegistry  # noqa: PLC0415
+
+    registry = AgentRegistry.from_env()
+    await registry.start()
+    app.state.registry = registry
+
     yield
+    await registry.stop()
     await _redis_pool.aclose()
 
 
@@ -143,6 +151,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         session_id=session_id,
         trace_id=trace_id,
         redis=request.app.state.redis,
+        registry=request.app.state.registry,
     )
 
     duration_ms = int((time.monotonic() - start) * 1000)

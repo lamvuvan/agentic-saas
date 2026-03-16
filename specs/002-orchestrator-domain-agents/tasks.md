@@ -88,7 +88,15 @@
 - [x] T029 [US1] Build orchestrator/graph.py: LangGraph StateGraph with nodes classify_intent→plan_execution→dispatch_to_agent→aggregate_response, replan conditional edge (replan_count < 3), chitchat short-circuit to aggregate
 - [x] T030 [US1] Implement POST /chat endpoint in orchestrator/main.py: parse ChatRequest, set auth ContextVar (token + tenant_id), resolve or create session_id, invoke graph with thread_id=session_id, return ChatResponse
 
-**Checkpoint**: Intent routing fully functional — POST /chat classifies and routes correctly with session tracking
+### Agent Discovery — AgentRegistry
+
+- [x] T074 [US1] Create orchestrator/agent_registry.py with AgentRegistry class: from_env() reads AGENT_SEED_URLS (comma-separated base URLs), start() fetches cards + spawns background refresh task, _refresh() GETs {url}/.well-known/agent.json per seed URL with 5s timeout, marks unhealthy on failure, build_prompt_context() renders healthy agents as markdown for prompt injection, get_a2a_endpoint(agent_name) returns a2a_endpoint from card
+- [x] T075 [US1] Update orchestrator/main.py lifespan: instantiate AgentRegistry.from_env(), call await registry.start(), store as app.state.registry; call await registry.stop() on shutdown; pass registry=request.app.state.registry to invoke_chat()
+- [x] T076 [US1] Update orchestrator/nodes/plan.py generate_plan() to accept registry param; inject registry.build_prompt_context() into system prompt via {agent_manifest} placeholder in plan_v1.md; fallback to hardcoded order-agent/bi-agent list when registry=None
+- [x] T077 [US1] Update orchestrator/nodes/a2a_dispatch.py dispatch_plan() to accept registry param; add _resolve_agent_url(agent_name, registry) that prefers registry.get_a2a_endpoint() and falls back to FALLBACK_AGENT_URLS env-var dict
+- [x] T078 Add AGENT_SEED_URLS to .env.example (http://localhost:8002,http://localhost:8003) and docker-compose.yml orchestrator env (http://order-agent:8002,http://bi-agent:8003); update orchestrator/prompts/plan_v1.md to use {agent_manifest} placeholder with routing rules block
+
+**Checkpoint**: Intent routing fully functional — POST /chat classifies and routes correctly with session tracking; AgentRegistry discovers agents dynamically (new agent appears in prompt ≤ 60s after startup)
 
 ---
 
@@ -289,13 +297,13 @@ All three stories are independently testable once the A2A backbone exists.
 | Phase 1 | Setup | T001–T004 | — |
 | Phase 2 | Foundational | T005–T012 | — |
 | Phase 3 | A2A Protocol | T013–T019 | US5 |
-| Phase 4 | Intent Routing | T020–T030 | US1 |
+| Phase 4 | Intent Routing + AgentRegistry | T020–T030, T074–T078 | US1 |
 | Phase 5 | Order Creation | T031–T046 | US2 |
 | Phase 6 | BI Queries | T047–T060 | US3 |
 | Phase 7 | Multi-Turn State | T061–T064 | US4 |
 | Phase 8 | Polish | T067–T073 | — |
 
-**Total**: 71 tasks across 8 phases
+**Total**: 76 tasks across 8 phases (T074–T078 added for AgentRegistry / Agent Discovery)
 
 ---
 

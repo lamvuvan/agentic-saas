@@ -7,6 +7,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import redis.asyncio as aioredis
 
@@ -64,14 +65,23 @@ async def generate_plan(
     session_id: str,
     redis: aioredis.Redis,
     trace_id: str = "",
+    registry: Any = None,
 ) -> ExecutionPlan:
     """
     Generate an ExecutionPlan for the given message and intent.
     Persists the plan to Redis immediately (Constitution Principle V).
     """
     prompt = _load_prompt()
-    # Strip few-shot block from system message and use as-is
-    system_text = prompt.strip()
+    # Inject live agent manifest from AgentRegistry when available
+    if registry is not None:
+        agent_manifest = registry.build_prompt_context()
+    else:
+        agent_manifest = (
+            "## Available Domain Agents\n\n"
+            "- **order-agent** (skill: `create_order`): Handles all order creation\n"
+            "- **bi-agent** (skill: `bi_query`): Handles all business intelligence queries\n"
+        )
+    system_text = prompt.strip().replace("{agent_manifest}", agent_manifest)
 
     messages = [
         {"role": "system", "content": system_text},

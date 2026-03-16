@@ -29,7 +29,7 @@ Build a three-service multi-agent system (Orchestrator :8000, Order Agent :8002,
 | **I. Orchestrator archetype** — reasoning + planning, no domain work | ✅ PASS | classify→plan→dispatch→aggregate; all domain execution delegated via A2A |
 | **I. Domain Agent archetype** — bounded domain, no cross-agent calls | ✅ PASS | Order Agent: `domain: order`; BI Agent: `domain: bi`; neither calls the other |
 | **II. Tool Registry First** — all tools registered before use | ✅ PASS | `customer__get_customers`, `customer__create_customer`, `order__create_order`, `bi__run_query` already in `config/tools.yaml` |
-| **II. A2A Agent Cards** — published at `/.well-known/agent.json` | ✅ PASS | All three services expose Agent Card endpoint |
+| **II. A2A Agent Cards** — published at `/.well-known/agent.json` | ✅ PASS | All three services expose Agent Card endpoint; AgentRegistry fetches cards at startup and refreshes every 60s; Plan node injects live manifest into system prompt (Constitution §II: "Orchestrators MUST use Agent Cards for capability discovery") |
 | **II. MCP layer** — Domain Agents access tools via Tool Registry, not raw HTTP | ✅ PASS | `ToolRegistryClient` in `shared/` wraps all tool calls |
 | **III. Test-First** — contract tests written before implementation | ✅ PASS | `tests/002-orchestrator-domain-agents/contract/` committed first |
 | **III. Orchestrator plan generation tested** | ✅ PASS | plan node tested for order + bi cases; failure path covered |
@@ -65,17 +65,18 @@ specs/002-orchestrator-domain-agents/
 orchestrator/                   # :8000 — Orchestrator Agent
 ├── main.py                     # FastAPI app, /chat, /health, /.well-known/agent.json, lifespan
 ├── graph.py                    # invoke_chat(): classify → plan → dispatch → aggregate
+├── agent_registry.py           # AgentRegistry: fetch /.well-known/agent.json from seed URLs, background refresh 60s, build_prompt_context(), get_a2a_endpoint()
 ├── session.py                  # Redis-backed session: 30-min TTL, last-20-turns, get_last_n(3)
 ├── models.py                   # OrchestratorState, IntentResult, ChatRequest, ChatResponse
 ├── a2a_client.py               # submit_to_agent(), poll_for_result() — wraps shared/a2a/client.py
 ├── nodes/
 │   ├── intent_classify.py      # GPT-4o-mini, escalates to GPT-4o at confidence < 0.72
-│   ├── plan.py                 # GPT-4o, outputs ExecutionPlan, persists plan:{plan_id} to Redis
-│   ├── a2a_dispatch.py         # Submits A2A tasks, polls, handles timeout/replan
+│   ├── plan.py                 # GPT-4o, injects AgentRegistry.build_prompt_context() into prompt, outputs ExecutionPlan, persists plan:{plan_id} to Redis
+│   ├── a2a_dispatch.py         # Resolves agent URL via AgentRegistry (fallback: env vars), submits A2A tasks, polls, handles timeout/replan
 │   └── aggregate.py            # Synthesises Domain Agent results → Vietnamese reply
 └── prompts/
     ├── intent_classify_v1.md   # System prompt + 8 few-shot examples
-    └── plan_v1.md              # Planning prompt + 2 few-shot examples
+    └── plan_v1.md              # Planning prompt with {agent_manifest} placeholder + 2 few-shot examples
 
 order_agent/                    # :8002 — Order Domain Agent
 ├── main.py                     # FastAPI app, A2A router, /.well-known/agent.json, lifespan
@@ -154,6 +155,20 @@ evals/
 
 ## Key Design Decisions
 
+### Agent Discovery (AgentRegistry)
+
+Each Domain Agent already publishes `/.well-known/agent.json`. Rather than hardcoding agent URLs and skills in the planning prompt, the Orchestrator runs an `AgentRegistry` that:
+
+1. Reads `AGENT_SEED_URLS` (comma-separated base URLs, e.g. `http://order-agent:8002,http://bi-agent:8003`)
+2. Fetches each Agent Card at startup; spawns a background task to re-fetch every 60s
+3. Tracks health per agent — failed fetch → marked unhealthy
+4. `build_prompt_context()` renders only healthy agents and their skills as markdown, injected into the plan prompt via `{agent_manifest}` placeholder in `plan_v1.md`
+5. `get_a2a_endpoint(agent_name)` is used by `a2a_dispatch.py`; falls back to `ORDER_AGENT_URL`/`BI_AGENT_URL` env vars if registry unavailable
+
+**Adding a new agent**: add its base URL to `AGENT_SEED_URLS` and restart the Orchestrator — the new agent is discovered within the next refresh cycle (≤ 60s from next startup).
+
+**Files**: `orchestrator/agent_registry.py` (new), `orchestrator/main.py` (lifespan), `orchestrator/nodes/plan.py` (registry param), `orchestrator/nodes/a2a_dispatch.py` (_resolve_agent_url), `orchestrator/prompts/plan_v1.md` ({agent_manifest})
+
 ### Voice: Out of Scope
 Voice input (US6, FR-007) is **removed from this plan**. The `/chat` endpoint accepts text only. If callers need voice-to-text, they perform STT client-side before calling the API. This eliminates the `faster-whisper` dependency, the `/voice` endpoint, and the `orchestrator/stt.py` module.
 
@@ -194,7 +209,7 @@ See [tasks.md](tasks.md) for the full 73-task breakdown across 9 phases:
 | 1 — Setup | pyproject.toml, Docker Compose, `__init__.py` | All services start healthy |
 | 2 — Foundational | shared/a2a/, shared/llm_client.py, A2A contract tests | Shared libs + contract tests pass |
 | 3 — A2A Protocol (US5) | A2A server/client, task lifecycle, token forwarding | A2A E2E: submitted→working→completed |
-| 4 — Intent Routing (US1) | Orchestrator graph, intent_classify, plan, dispatch, aggregate | classify 20 inputs ≥ 90% accuracy |
+| 4 — Intent Routing (US1) | Orchestrator graph, intent_classify, plan, dispatch, aggregate; **AgentRegistry + dynamic plan prompt** | classify 20 inputs ≥ 90%; new agent appears in prompt ≤ 60s |
 | 5 — Order Creation (US2) | Order Agent full pipeline, FAISS, VN utils, multi-turn confirm | E2E order ≥ 85% on 20 inputs |
 | 6 — BI Queries (US3) | BI Agent: NL2SQL, safety, execute, format | BI correctness ≥ 80% on 20 queries |
 | 7 — Multi-Turn State (US4) | session.py, LangGraph checkpointer, continuation resume | 3-turn order conversation preserves state |

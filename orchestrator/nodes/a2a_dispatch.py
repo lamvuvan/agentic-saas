@@ -10,15 +10,26 @@ from shared.a2a.models import ExecutionPlan, PlanStep, TaskStatus
 
 logger = logging.getLogger(__name__)
 
-_AGENT_URLS: dict[str, str] = {
+# Fallback env-var URLs used when AgentRegistry is unavailable or unhealthy
+_FALLBACK_AGENT_URLS: dict[str, str] = {
     "order-agent": os.environ.get("ORDER_AGENT_URL", "http://order-agent:8002"),
     "bi-agent": os.environ.get("BI_AGENT_URL", "http://bi-agent:8003"),
 }
 
 
+def _resolve_agent_url(agent_name: str, registry: Any) -> str | None:
+    """Resolve agent URL: prefer AgentRegistry, fall back to env vars."""
+    if registry is not None:
+        url = registry.get_a2a_endpoint(agent_name)
+        if url:
+            return url
+    return _FALLBACK_AGENT_URLS.get(agent_name)
+
+
 async def dispatch_plan(
     plan: ExecutionPlan,
     trace_id: str = "",
+    registry: Any = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """
     Execute plan steps sequentially (MVP: single step only).
@@ -37,7 +48,7 @@ async def dispatch_plan(
         if step.status != "pending":
             continue
 
-        agent_url = _AGENT_URLS.get(step.agent)
+        agent_url = _resolve_agent_url(step.agent, registry)
         if agent_url is None:
             logger.error(
                 "unknown_agent",

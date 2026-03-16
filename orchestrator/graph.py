@@ -53,6 +53,7 @@ async def invoke_chat(
     session_id: str,
     trace_id: str = "",
     redis: aioredis.Redis | None = None,
+    registry: Any = None,
 ) -> dict[str, Any]:
     """
     Main entry point for the Orchestrator graph.
@@ -127,6 +128,7 @@ async def invoke_chat(
         session_id=session_id,
         redis=redis_for_plan,
         trace_id=trace_id,
+        registry=registry,
     )
 
     # Node 3: Dispatch to agents (with replanning)
@@ -134,7 +136,7 @@ async def invoke_chat(
     replan_count = 0
 
     while replan_count <= MAX_REPLAN_ATTEMPTS:
-        results, needs_replan = await dispatch_plan(plan=plan, trace_id=trace_id)
+        results, needs_replan = await dispatch_plan(plan=plan, trace_id=trace_id, registry=registry)
         agent_results = results
 
         if not needs_replan:

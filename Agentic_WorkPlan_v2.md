@@ -30,7 +30,8 @@ Docker Compose:
 **1.1 Communication Flow**
 
 +----------------------------------------------------------------------+
-| **User → Orchestrator:** HTTP POST /chat (text input)                |
+| **User → Orchestrator:** HTTP POST /chat \| WebSocket /chat/stream   |
+| (text input --- client xử lý STT trước khi gửi)                      |
 |                                                                      |
 | **Orchestrator → Domain Agent:** A2A --- POST /a2a/tasks + GET       |
 | /a2a/tasks/{id} (poll)                                               |
@@ -50,6 +51,180 @@ Docker Compose:
   **gpt-4o**        Orchestrator plan, NL2SQL phức tạp, Order reasoning phức tạp       1--3s         Cần reasoning đa bước; escalate khi confidence \< 0.72
   **o1-mini**       Cross-domain plan phức tạp (\> 3 agent), ambiguous edge case       3--10s        Hiếm dùng; chỉ escalate khi GPT-4o fail 2 lần
   ----------------- ------------------------------------------------------------------ ------------- ----------------------------------------------------------------
+
+**1.3 Agent Discovery --- Orchestrator Tự Động Nhận Biết Agents**
+
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **Vấn đề:** Nếu hardcode danh sách agent vào system prompt, mỗi khi thêm/xoá/đổi agent phải sửa code và restart Orchestrator. Cách đúng: mỗi Domain Agent tự mô tả bản thân qua Agent Card --- Orchestrator fetch và inject động vào prompt lúc runtime.
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+**A2A Agent Card --- mỗi Domain Agent expose endpoint chuẩn**
+
+\# GET /.well-known/agent.json (mỗi Domain Agent đều có)
+
+\# Orchestrator fetch endpoint này để biết agent có skills gì
+
+\@app.get(\"/.well-known/agent.json\")
+
+async def agent\_card():
+
+return {
+
+\"name\": \"Order Agent\",
+
+\"version\": \"1.0.0\",
+
+\"description\": \"Tạo và quản lý đơn hàng từ tiếng Việt tự nhiên. Hỗ
+trợ multi-turn, HITL confirm.\",
+
+\"skills\": \[
+
+{
+
+\"id\": \"create\_order\",
+
+\"name\": \"Tạo đơn hàng\",
+
+\"description\": \"Nhận câu tiếng Việt, extract entities, tạo đơn sau
+khi user xác nhận\",
+
+\"examples\": \[\"anh Lâm hai trứng lộn\", \"bàn 3 cho tôi 3 bò kho bánh
+mì\"\]
+
+}
+
+\],
+
+\"a2a\_endpoint\": \"http://order-agent:8002/a2a/tasks\",
+
+\"health\": \"http://order-agent:8002/health\"
+
+}
+
+**AgentRegistry trong Orchestrator --- tự fetch & hot-reload**
+
+\# orchestrator/core/agent\_registry.py
+
+class AgentRegistry:
+
+\"\"\"Fetch agent cards định kỳ --- Orchestrator không cần biết trước
+agent nào tồn tại.\"\"\"
+
+def \_\_init\_\_(self, seed\_urls: list\[str\], refresh\_interval: int =
+60):
+
+self.\_seed\_urls = seed\_urls \# từ env: AGENT\_SEED\_URLS
+
+self.\_refresh\_interval = refresh\_interval
+
+self.\_agents: dict\[str, dict\] = {}
+
+self.\_healthy: set\[str\] = set()
+
+async def start(self):
+
+await self.\_refresh() \# fetch lần đầu khi startup
+
+asyncio.create\_task(self.\_background\_refresh()) \# sau đó refresh mỗi
+60s
+
+async def \_refresh(self):
+
+async with httpx.AsyncClient(timeout=5.0) as client:
+
+for url in self.\_seed\_urls:
+
+try:
+
+r = await client.get(f\"{url}/.well-known/agent.json\")
+
+card = r.json()
+
+self.\_agents\[card\[\"name\"\]\] = card
+
+self.\_healthy.add(card\[\"name\"\])
+
+except Exception:
+
+self.\_healthy.discard(self.\_name\_from\_url(url)) \# đánh dấu
+unhealthy
+
+def build\_prompt\_context(self) -\> str:
+
+\"\"\"Render agent manifest → inject vào system prompt mỗi
+request.\"\"\"
+
+lines = \[\"\#\# Available Domain Agents\\n\"\]
+
+for agent in \[v for k,v in self.\_agents.items() if k in
+self.\_healthy\]:
+
+lines.append(f\"\#\#\# {agent\[\'name\'\]} (v{agent\[\'version\'\]})\")
+
+lines.append(f\"{agent\[\'description\'\]}\\n\")
+
+for skill in agent.get(\"skills\", \[\]):
+
+examples = \"; \".join(skill.get(\"examples\", \[\])\[:2\])
+
+lines.append(f\"- \`{skill\[\'id\'\]}\`: {skill\[\'description\'\]}\")
+
+if examples: lines.append(f\" Examples: {examples}\")
+
+lines.append(f\"A2A endpoint: {agent\[\'a2a\_endpoint\'\]}\\n\")
+
+return \"\\n\".join(lines)
+
+**Dynamic Prompt Injection trong Plan Node**
+
+\# Plan node inject agent manifest tại runtime --- luôn dùng danh sách
+mới nhất
+
+ORCHESTRATOR\_SYSTEM\_TEMPLATE = \"\"\"
+
+Bạn là Orchestrator của hệ thống Agentic SaaS.
+
+{agent\_manifest}
+
+\#\# Routing Rules
+
+\- Chỉ route đến agents có trong danh sách \"Available Domain Agents\" ở
+trên.
+
+\- Nếu agent không có trong danh sách → không route, thông báo ngoài
+phạm vi.
+
+\- Danh sách cập nhật tự động --- đừng assume agent tồn tại nếu không
+thấy ở đây.
+
+\"\"\"
+
+class PlanNode:
+
+def \_\_init\_\_(self, registry: AgentRegistry): self.registry =
+registry
+
+async def run(self, state: OrchestratorState) -\> OrchestratorState:
+
+system = ORCHESTRATOR\_SYSTEM\_TEMPLATE.format(
+
+agent\_manifest=self.registry.build\_prompt\_context() \# fresh mỗi
+request
+
+)
+
+response = await llm\_call(messages=\..., system=system,
+task\_type=\"plan\")
+
+\...
+
+\# Khi thêm Inventory Agent mới --- chỉ cần:
+
+\#
+AGENT\_SEED\_URLS=http://order-agent:8002,http://bi-agent:8003,http://inventory-agent:8004
+
+\# Orchestrator tự discover trong lần refresh tiếp theo (≤ 60s), không
+cần restart.
 
 **2. Tool Registry v1 --- Config-Based**
 
@@ -95,7 +270,7 @@ api:
 
 method: GET
 
-url: \"\${API_BASE}/customers\"
+url: \"\${API\_BASE}/customers\"
 
 params: { query: keyword, limit: pageSize }
 
@@ -131,7 +306,7 @@ api:
 
 method: POST
 
-url: \"\${API_BASE}/customers\"
+url: \"\${API\_BASE}/customers\"
 
 body\_mapping: { name: name, phone: contactNumber, address: address }
 
@@ -189,7 +364,7 @@ api:
 
 method: POST
 
-url: \"\${API_BASE}/orders\"
+url: \"\${API\_BASE}/orders\"
 
 body\_mapping:
 
@@ -302,23 +477,24 @@ xong.
 
 **3.1 Task Breakdown**
 
-  ---------- ---------------------------------------------------------------------------------------------------------------------------------------------------- ----------- -------------------------------------------------- -------------
-  **Ngày**   **Công việc**                                                                                                                                        **Owner**   **Deliverable**                                    **Ưu tiên**
-  **1**      Khởi tạo monorepo: pyproject.toml, shared/ lib (auth\_context, llm\_client, models), Makefile, .env.example, pre-commit hooks                        TL          *Repo clone được, \`make dev\` chạy*               **P0**
-  **1**      Docker Compose 4 services: orchestrator:8000, tool-registry:8001, order-agent:8002, bi-agent:8003 --- mỗi service /health endpoint                   SE          *\`docker compose up\` --- 4 services healthy*     **P0**
-  **2**      shared/llm.py: OpenAI async wrapper, select\_model(task\_type) từ config, structured output (response\_format=json\_object), retry logic             AI          *llm.py unit test: intent/entity task types*       **P0**
-  **2**      shared/auth\_context.py + AuthForwardMiddleware --- copy vào tất cả services; unit test: token set/get trong async context                           SE          *Auth forward test pass 100%*                      **P0**
-  **3**      Tool Registry: config\_loader.py đọc tools.yaml → build ToolDefinition + dynamic handler; GET /tools; POST /tools/{name}/execute                     SE          *3 tools load đúng; curl test get\_customers OK*   **P0**
-  **3**      Tool Registry: HTTP adapter dùng auth\_context.\_auth\_headers(); timeout=10s; retry=2; error mapping tiếng Việt                            SE          *Adapter test với mock server*                     **P0**
-  **4**      ToolRegistryClient (shared): get\_openai\_tools(namespace) convert sang OpenAI function format; execute(name, params) forward token qua header       AI          *Client test: tools load + execute mock tool*      **P0**
-  **4**      Orchestrator LangGraph: OrchestratorState TypedDict, graph compile với nodes stub, Redis checkpointer, session manager                               AI          *Graph compile; state persist qua Redis*           **P0**
-  **5**      Intent Classifier node: GPT-4o-mini, system prompt + 8 few-shot (order/bi/chitchat), structured output JSON, test 20 câu tiếng Việt                  AI          *Accuracy ≥ 90% trên 20 test cases*                **P0**
-  **5**      A2A Server skeleton cho Order Agent và BI Agent: POST /a2a/tasks (async task store), GET /a2a/tasks/{id}; task status: submitted→working→completed   SE          *Postman test A2A flow với stub handler*           **P0**
-  **6**      Orchestrator A2A Client: send\_task\_a2a(agent, skill, params) → submit → poll → return; forward auth header; timeout 30s                            AI          *A2A Client test với stub Domain Agent*            **P0**
-  **6**      Plan node (GPT-4o): system prompt với domain agents, JSON output {reasoning, steps\[\]}, inject 3 turns history                                      AI          *Plan node tạo đúng steps cho order + bi cases*    **P1**
-  **7**      E2E integration test: 5 order + 3 bi + 2 chitchat → Orchestrator → A2A → Domain stub → Tool Registry mock → response; tất cả pass                    All         *pytest e2e pass; demo video 3 phút*               **P0**
-  **7**      Logging middleware: request\_id, session\_id, intent, model, latency\_ms, tokens --- JSON structured log mọi service                                 SE          *Log đầy đủ cho mọi request*                       **P1**
-  ---------- ---------------------------------------------------------------------------------------------------------------------------------------------------- ----------- -------------------------------------------------- -------------
+  ---------- ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- ------------------------------------------------------------------------------------ -------------
+  **Ngày**   **Công việc**                                                                                                                                                                **Owner**   **Deliverable**                                                                      **Ưu tiên**
+  **1**      Khởi tạo monorepo: pyproject.toml, shared/ lib (auth\_context, llm\_client, models), Makefile, .env.example, pre-commit hooks                                                TL          *Repo clone được, \`make dev\` chạy*                                                 **P0**
+  **1**      Docker Compose 4 services: orchestrator:8000, tool-registry:8001, order-agent:8002, bi-agent:8003 --- mỗi service /health endpoint                                           SE          *\`docker compose up\` --- 4 services healthy*                                       **P0**
+  **2**      shared/llm.py: OpenAI async wrapper, select\_model(task\_type) từ config, structured output (response\_format=json\_object), retry logic                                     AI          *llm.py unit test: intent/entity task types*                                         **P0**
+  **2**      shared/auth\_context.py + AuthForwardMiddleware --- copy vào tất cả services; unit test: token set/get trong async context                                                   SE          *Auth forward test pass 100%*                                                        **P0**
+  **3**      Tool Registry: config\_loader.py đọc tools.yaml → build ToolDefinition + dynamic handler; GET /tools; POST /tools/{name}/execute                                             SE          *3 tools load đúng; curl test get\_customers OK*                                     **P0**
+  **3**      Tool Registry: HTTP adapter dùng auth\_context.\_auth\_headers(); timeout=10s; retry=2; error mapping tiếng Việt                                                    SE          *Adapter test với mock server*                                                       **P0**
+  **4**      ToolRegistryClient (shared): get\_openai\_tools(namespace) convert sang OpenAI function format; execute(name, params) forward token qua header                               AI          *Client test: tools load + execute mock tool*                                        **P0**
+  **4**      Orchestrator LangGraph: OrchestratorState TypedDict, graph compile với nodes stub, Redis checkpointer, session manager                                                       AI          *Graph compile; state persist qua Redis*                                             **P0**
+  **5**      Intent Classifier node: GPT-4o-mini, system prompt + 8 few-shot (order/bi/chitchat), structured output JSON, test 20 câu tiếng Việt                                          AI          *Accuracy ≥ 90% trên 20 test cases*                                                  **P0**
+  **5**      A2A Server skeleton cho Order Agent và BI Agent: POST /a2a/tasks, GET /a2a/tasks/{id}, GET /.well-known/agent.json (Agent Card); task status: submitted→working→completed    SE          *Postman test A2A flow; agent card trả đúng JSON*                                    **P0**
+  **6**      AgentRegistry (Orchestrator): fetch /.well-known/agent.json từ seed URLs khi startup, background refresh mỗi 60s, health tracking, build\_prompt\_context()                  AI          *AgentRegistry test: thêm agent mới → tự xuất hiện trong prompt context sau ≤ 60s*   **P0**
+  **6**      Orchestrator A2A Client: send\_task\_a2a(agent, skill, params) → submit → poll → return; forward auth header; timeout 30s                                                    AI          *A2A Client test với stub Domain Agent*                                              **P0**
+  **6**      Plan node (GPT-4o): inject AgentRegistry.build\_prompt\_context() vào system prompt, JSON output {reasoning, steps\[\]}, inject 3 turns history; KHÔNG hardcode agent list   AI          *Plan node route đúng sau khi thêm/xoá agent dynamically*                            **P1**
+  **7**      E2E integration test: 5 order + 3 bi + 2 chitchat → Orchestrator → A2A → Domain stub → Tool Registry mock → response; tất cả pass                                            All         *pytest e2e pass; demo video 3 phút*                                                 **P0**
+  **7**      Logging middleware: request\_id, session\_id, intent, model, latency\_ms, tokens --- JSON structured log mọi service                                                         SE          *Log đầy đủ cho mọi request*                                                         **P1**
+  ---------- ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- ------------------------------------------------------------------------------------ -------------
 
 **4. Sprint 2 --- Core Agents: Order & BI (Ngày 8--14)**
 
@@ -348,7 +524,7 @@ xong.
 
   ---------- ------------------------------------------------------------------------------------------------------------------------------------------- ----------- --------------------------------------------------- -------------
   **Ngày**   **Công việc**                                                                                                                               **Owner**   **Deliverable**                                     **Ưu tiên**
-  **8**      Product catalog loader: đọc products từ the API → normalize (lowercase, bỏ dấu câu, unicode NFC, alias mapping) → corpus text          SE          *ProductCatalog load \< 3s, normalize test*         **P0**
+  **8**      Product catalog loader: đọc products từ API → normalize (lowercase, bỏ dấu câu, unicode NFC, alias mapping) → corpus text          SE          *ProductCatalog load \< 3s, normalize test*         **P0**
   **8**      FAISS embedding index: paraphrase-multilingual-MiniLM-L12-v2, benchmark recall\@3 trên 50 product name variations tiếng Việt                AI          *recall\@3 ≥ 90% trên test set*                     **P0**
   **9**      ProductMatcher: cosine search → threshold routing → (auto / llm-rerank / ask-user); auto-rebuild index mỗi 30 phút hoặc webhook             AI          *precision ≥ 85% trên 30 test queries*              **P0**
   **9**      VN text utils: số đếm chữ→số (một→1, mười hai→12\...), honorific strip (anh/chị/em/bác/cô/ông/bà), normalize whitespace, unicode NFC        AI          *unit test 50 cases, 100% pass*                     **P1**
@@ -367,7 +543,7 @@ xong.
 
 \# Lớp 1 --- Role + Rules (cố định)
 
-Bạn là Order Agent của hệ thống. Tạo đơn hàng từ tiếng Việt tự
+Bạn là Order Agent của hệ thống Agentic SaaS. Tạo đơn hàng từ tiếng Việt tự
 nhiên.
 
 Quy trình BẮT BUỘC:

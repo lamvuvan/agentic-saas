@@ -33,6 +33,7 @@ services:
       TOOL_REGISTRY_URL: http://tool-registry:8001
       ORDER_AGENT_URL: http://order-agent:8002
       BI_AGENT_URL: http://bi-agent:8003
+      AGENT_SEED_URLS: http://order-agent:8002,http://bi-agent:8003
       REDIS_URL: redis://redis:6379/0
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL_FAST: ${OPENAI_MODEL_FAST:-gpt-4o-mini}
