@@ -37,7 +37,7 @@ async def setup_checkpointer(redis_url: str | None = None) -> None:
     try:
         from langgraph.checkpoint.redis.aio import AsyncRedisSaver  # noqa: PLC0415
 
-        _saver = AsyncRedisSaver.from_conn_string(url)
+        _saver = AsyncRedisSaver(redis_url=url)
         await _saver.asetup()
         logger.info("order_checkpointer_ready", extra={"redis_url": url.split("@")[-1]})
     except Exception as exc:  # pragma: no cover
