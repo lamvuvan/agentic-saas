@@ -1,27 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(*)",
-      "Read(*)",
-      "Edit(*)",
-      "Write(*)",
-      "WebSearch",
-      "Bash(pip install:*)",
-      "Bash(pip3 install:*)",
-      "Bash(python3 -c \"import aiosqlite; print\\(''aiosqlite OK''\\)\")",
-      "Bash(python3 -c \":*)",
-      "Bash(python3 -m pytest tests/contract/ -v)",
-      "Bash(python3 -m pytest tests/contract/test_rest_schema.py::test_register_tool_response_shape -v --tb=short)",
-      "Bash(python3 -:*)",
-      "Bash(python3 -m pytest tests/contract/ -v --tb=short)",
-      "Bash(python3 -m pytest tests/unit/ -v --tb=short)",
-      "Bash(python3 -c \"import asyncio, asyncpg; asyncio.run\\(asyncpg.connect\\(''''postgresql://registry:secret@localhost/tool_registry''''\\)\\)\")",
-      "Bash(python3 -c \"import a2a; print\\(dir\\(a2a\\)\\)\")",
-      "Bash(python3 -c \"import fastapi_mcp; print\\(dir\\(fastapi_mcp\\)\\)\")",
-      "Bash(pip3 show:*)",
-      "Bash(pip3 search:*)",
-      "Bash(pip3 index:*)",
-      "Bash(python3 -c \"import a2a; print\\(a2a.__version__\\)\")"
+      "WebSearch"
     ]
   }
 }

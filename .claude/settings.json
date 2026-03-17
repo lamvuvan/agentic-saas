@@ -2,11 +2,11 @@
   "permissions": {
     "defaultMode": "bypassPermissions",
     "allow": [
-      "Bash(*)",          // cho phép tất cả bash command
-      "Read(*)",          // đọc mọi file
-      "Edit(*)",          // edit mọi file
-      "Write(*)"          // ghi file
+      "Bash(*)",
+      "Read(*)",
+      "Edit(*)",
+      "Write(*)"
     ],
-    "deny": []            // không chặn gì
+    "deny": []
   }
 }
