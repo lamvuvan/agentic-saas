@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(*)",
+      "Read(*)",
+      "Edit(*)",
+      "Write(*)"
     ]
   }
 }
