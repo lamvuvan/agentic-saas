@@ -1,4 +1,11 @@
-"""Order Agent A2A server — POST /a2a/tasks, GET /a2a/tasks/{task_id}."""
+"""Order Agent A2A server — POST /a2a/tasks, GET /a2a/tasks/{task_id} (T062).
+
+HITL pattern uses LangGraph native interrupt_before=["hitl_confirm"]:
+    1. POST /a2a/tasks → run compiled.ainvoke(initial_state, config)
+       → if confirm_message set (graph halted at interrupt) → status=input-required
+    2. POST /a2a/tasks/{id}/resume → compiled.ainvoke(Command(resume={...}), config)
+       → graph resumes from hitl_confirm node → status=completed
+"""
 
 from __future__ import annotations
 
@@ -10,8 +17,6 @@ from typing import Any
 import redis.asyncio as aioredis
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-
-from pydantic import ValidationError
 
 from shared.a2a.models import A2AResult, A2ATask, A2ATaskPayload, TaskStatus
 from shared.a2a.server import get_task, store_task, update_task_status
@@ -36,6 +41,10 @@ class TaskSubmitResponse(BaseModel):
     status: str
 
 
+class ResumeRequest(BaseModel):
+    user_response: str
+
+
 # ---------------------------------------------------------------------------
 # Background processor
 # ---------------------------------------------------------------------------
@@ -47,153 +56,80 @@ async def _process_order_task(
     redis: aioredis.Redis,
     memory: Any = None,
 ) -> None:
-    """
-    Execute the Order Agent graph for this task in the background.
+    """Execute Order Agent StateGraph for this task in the background.
 
-    Continuation resume:
-        When params contains ``continuation.task_id`` (the original interrupted task),
-        load the persisted OrderDraft from Redis and call run_order_graph with the
-        continuation dict.  This mirrors ainvoke(None, {configurable: {thread_id: task_id}})
-        in a full LangGraph StateGraph with AsyncRedisSaver checkpointing.
+    Uses LangGraph compiled.ainvoke() with interrupt_before=["hitl_confirm"].
+    When the graph halts at the interrupt, sets task status to INPUT_REQUIRED.
     """
     await update_task_status(redis, task_id, TaskStatus.WORKING)
 
     try:
-        from order_agent.core.react_loop import MemoryAwareReActLoop  # noqa: PLC0415
+        from order_agent.graph import _compiled, _build_graph  # noqa: PLC0415
+
+        graph = _compiled
+        if graph is None:
+            from langgraph.checkpoint.memory import MemorySaver  # noqa: PLC0415
+
+            graph = _build_graph().compile(
+                checkpointer=MemorySaver(),
+                interrupt_before=["hitl_confirm"],
+            )
 
         params = task.params
-        continuation = params.get("continuation")
+        product_matcher = getattr(_get_app_state(), "product_matcher", None)
 
-        # Resume path: detect continuation.task_id and load checkpoint
-        if continuation and continuation.get("task_id"):
-            original_task_id = continuation["task_id"]
-            user_input = continuation.get("user_input", "")
+        initial_state = {
+            "task_id": task_id,
+            "plan_id": params.get("plan_id", ""),
+            "original_message": params.get("message", params.get("original_message", "")),
+            "instructions": params.get("instructions", ""),
+            "conversation_history": params.get("conversation_history", []),
+            "dependency_results": params.get("dependency_results", {}),
+            "memory_context": "",
+            "entities": {},
+            "matched_products": [],
+            "customer": {},
+            "order_preview": {},
+            "confirm_message": "",
+            "user_confirmation": "",
+            "result": {},
+        }
 
-            # Load draft checkpoint keyed by original task_id (thread_id=task_id)
-            draft_json = await redis.get(f"order:draft:{original_task_id}")
-            if draft_json is None:
-                # Check AsyncRedisSaver checkpoint for task context
-                try:
-                    from order_agent.graph import _saver  # noqa: PLC0415
-
-                    if _saver is not None:
-                        config = {"configurable": {"thread_id": original_task_id}}
-                        cp = await _saver.aget(config)
-                        if cp:
-                            draft_key = cp.get("channel_values", {}).get("draft_key")
-                            if draft_key:
-                                draft_json = await redis.get(draft_key)
-                except Exception:  # pragma: no cover
-                    pass
-
-            if draft_json is None:
-                await update_task_status(
-                    redis,
-                    task_id,
-                    TaskStatus.FAILED,
-                    error=f"No checkpoint found for original task {original_task_id}",
-                )
-                return
-
-            # Inject the restored draft_json into params so run_order_graph uses it
-            params = {
-                **params,
-                "continuation": {
-                    "task_id": original_task_id,
-                    "user_input": user_input,
-                    "_draft_json": draft_json,  # pre-loaded for efficiency
-                },
+        config = {
+            "configurable": {
+                "thread_id": task_id,
+                "product_matcher": product_matcher,
+                "tool_registry_url": os.environ.get("TOOL_REGISTRY_URL", "http://tool-registry:8001"),
+                "memory": memory,
             }
+        }
 
-        loop = MemoryAwareReActLoop(skill="create_order")
+        result_state = await graph.ainvoke(initial_state, config)
 
-        # ── Unpack A2ATaskPayload (if sent by DispatchEngine) ─────────────
-        payload: A2ATaskPayload | None = None
-        try:
-            payload = A2ATaskPayload.model_validate(task.params)
-        except (ValidationError, Exception):
-            payload = None  # Backward compat: old-format plain dict params
-
-        # ── HITL continuation path ────────────────────────────────────────
-        # If the original task had a pending HITL gate, route to resume_after_hitl()
-        # instead of the normal order graph checkpoint resume.
-        if continuation and continuation.get("task_id"):
-            original_task_id = continuation["task_id"]
-            hitl_raw = await redis.get(f"hitl:{original_task_id}")
-            if hitl_raw:
-                user_input = continuation.get("user_input", "")
-                tool_registry_url = os.environ.get("TOOL_REGISTRY_URL", "")
-                result = await loop.resume_after_hitl(
-                    user_response=user_input,
-                    task_id=original_task_id,
-                    redis=redis,
-                    tool_registry_url=tool_registry_url,
-                )
-
-                if result.get("__scope_change__"):
-                    # Signal scope change back to Orchestrator
-                    a2a_result = A2AResult(
-                        output={"__scope_change__": True, "new_request": result.get("new_request", "")},
-                        reasoning_summary="Người dùng thay đổi yêu cầu sang chủ đề mới",
-                        confidence=1.0,
-                    )
-                    await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
-                elif result.get("status") == "modify":
-                    # Re-run graph with updated user feedback injected
-                    modified_params = {**params, "message": result.get("user_feedback", user_input)}
-                    result2 = await loop.run(task_id=task_id, params=modified_params, redis=redis, memory=memory)
-                    if result2.get("status") == "input-required":
-                        await update_task_status(
-                            redis, task_id, TaskStatus.INPUT_REQUIRED,
-                            input_request=result2.get("input_request", ""),
-                        )
-                    else:
-                        a2a_result = A2AResult(
-                            output=result2.get("output", {}),
-                            reasoning_summary=result2.get("reasoning_summary", "Order re-processed after HITL modify"),
-                            confidence=result2.get("confidence"),
-                            tool_calls=result2.get("tool_calls", []),
-                        )
-                        await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
-                else:
-                    # confirm, cancel, or error — all terminal
-                    outcome = result.get("status", "cancelled")
-                    a2a_result = A2AResult(
-                        output=result,
-                        reasoning_summary=result.get("message", f"HITL {outcome}"),
-                        confidence=1.0,
-                    )
-                    await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
-                return
-        # ── End HITL continuation path ───────────────────────────────────
-
-        result = await loop.run(task_id=task_id, params=params, redis=redis, memory=memory, payload=payload)
-
-        if result.get("status") == "input-required":
+        # Detect interrupt: confirm_message set, user_confirmation empty
+        if result_state.get("confirm_message") and not result_state.get("user_confirmation"):
             await update_task_status(
                 redis,
                 task_id,
                 TaskStatus.INPUT_REQUIRED,
-                input_request=result.get("input_request", ""),
+                input_request=result_state["confirm_message"],
             )
-        elif result.get("__hitl__"):
-            # HITL gate triggered by graph (e.g., via _execute_tool signal)
-            await update_task_status(
-                redis,
-                task_id,
-                TaskStatus.INPUT_REQUIRED,
-                input_request=result.get("question", "Xác nhận thao tác?"),
-            )
-        else:
-            a2a_result = A2AResult(
-                output=result.get("output", {}),
-                reasoning_summary=result.get("reasoning_summary", "Order processed"),
-                confidence=result.get("confidence"),
-                tool_calls=result.get("tool_calls", []),
-            )
-            await update_task_status(
-                redis, task_id, TaskStatus.COMPLETED, result=a2a_result
-            )
+            return
+
+        # Terminal state
+        final_result = result_state.get("result", {})
+        a2a_data = final_result.get("__a2a_result__", final_result)
+
+        a2a_result = A2AResult(
+            output={k: v for k, v in (a2a_data if isinstance(a2a_data, dict) else final_result).items()
+                    if not k.startswith("__")},
+            reasoning_summary=(
+                a2a_data.get("reasoning_summary", "Order processed.")
+                if isinstance(a2a_data, dict) else "Order processed."
+            ),
+            tool_calls=a2a_data.get("tool_calls", []) if isinstance(a2a_data, dict) else [],
+        )
+        await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
 
     except Exception as exc:
         logger.error(
@@ -206,6 +142,90 @@ async def _process_order_task(
         )
 
 
+async def _resume_order_task(
+    task_id: str,
+    user_response: str,
+    redis: aioredis.Redis,
+    memory: Any = None,
+) -> None:
+    """Resume an interrupted Order Agent graph via Command(resume=...).
+
+    Called by POST /a2a/tasks/{id}/resume after the user responds to the confirmation.
+    """
+    await update_task_status(redis, task_id, TaskStatus.WORKING)
+
+    try:
+        from langgraph.types import Command  # noqa: PLC0415
+        from order_agent.graph import _compiled, _build_graph  # noqa: PLC0415
+
+        graph = _compiled
+        if graph is None:
+            from langgraph.checkpoint.memory import MemorySaver  # noqa: PLC0415
+
+            graph = _build_graph().compile(
+                checkpointer=MemorySaver(),
+                interrupt_before=["hitl_confirm"],
+            )
+
+        product_matcher = getattr(_get_app_state(), "product_matcher", None)
+
+        config = {
+            "configurable": {
+                "thread_id": task_id,
+                "product_matcher": product_matcher,
+                "tool_registry_url": os.environ.get("TOOL_REGISTRY_URL", "http://tool-registry:8001"),
+                "memory": memory,
+            }
+        }
+
+        # Resume from checkpoint — Command sets user_confirmation in state
+        result_state = await graph.ainvoke(
+            Command(resume={"user_confirmation": user_response}),
+            config=config,
+        )
+
+        final_result = result_state.get("result", {})
+        a2a_data = final_result.get("__a2a_result__", final_result)
+
+        a2a_result = A2AResult(
+            output={k: v for k, v in (a2a_data if isinstance(a2a_data, dict) else final_result).items()
+                    if not k.startswith("__")},
+            reasoning_summary=(
+                a2a_data.get("reasoning_summary", "Order completed after confirmation.")
+                if isinstance(a2a_data, dict) else "Order completed after confirmation."
+            ),
+            tool_calls=a2a_data.get("tool_calls", []) if isinstance(a2a_data, dict) else [],
+        )
+        await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
+
+    except Exception as exc:
+        logger.error(
+            "order_resume_failed",
+            extra={"task_id": task_id, "error": str(exc)},
+            exc_info=True,
+        )
+        await update_task_status(
+            redis, task_id, TaskStatus.FAILED, error=f"Order resume failed: {exc}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# App state helper
+# ---------------------------------------------------------------------------
+
+
+_app_state_ref: Any = None
+
+
+def _get_app_state() -> Any:
+    return _app_state_ref
+
+
+def set_app_state(state: Any) -> None:
+    global _app_state_ref  # noqa: PLW0603
+    _app_state_ref = state
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -216,10 +236,11 @@ async def submit_task(body: TaskSubmitRequest, request: Request) -> TaskSubmitRe
     """Accept A2A task and return task_id immediately (< 200ms)."""
     redis: aioredis.Redis = request.app.state.redis
     memory = getattr(request.app.state, "memory", None)
+    set_app_state(request.app.state)
+
     task = A2ATask(skill=body.skill, params=body.params)
     await store_task(redis, task)
 
-    # Kick off background processing — do not await
     asyncio.create_task(
         _process_order_task(task.task_id, task, redis, memory=memory),
         name=f"order_task_{task.task_id}",
@@ -249,3 +270,28 @@ async def get_task_status(task_id: str, request: Request) -> dict[str, Any]:
     if task.input_request:
         response["input_request"] = task.input_request
     return response
+
+
+@router.post("/tasks/{task_id}/resume", status_code=202)
+async def resume_task(task_id: str, body: ResumeRequest, request: Request) -> dict[str, Any]:
+    """Resume an interrupted task after user provides confirmation.
+
+    Uses LangGraph Command(resume={"user_confirmation": body.user_response})
+    to resume from the hitl_confirm node checkpoint.
+    """
+    redis: aioredis.Redis = request.app.state.redis
+    memory = getattr(request.app.state, "memory", None)
+    set_app_state(request.app.state)
+
+    task = await get_task(redis, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found or expired")
+    if task.status != TaskStatus.INPUT_REQUIRED:
+        raise HTTPException(status_code=409, detail=f"Task {task_id} is not awaiting input (status={task.status.value})")
+
+    asyncio.create_task(
+        _resume_order_task(task_id, body.user_response, redis, memory=memory),
+        name=f"order_resume_{task_id}",
+    )
+
+    return {"task_id": task_id, "status": "working"}

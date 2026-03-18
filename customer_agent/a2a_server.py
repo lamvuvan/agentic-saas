@@ -1,4 +1,11 @@
-"""Customer Agent A2A server — POST /a2a/tasks, GET /a2a/tasks/{task_id} — T134."""
+"""Customer Agent A2A server — POST /a2a/tasks, GET /a2a/tasks/{task_id} (T063).
+
+HITL pattern uses LangGraph native interrupt_before=["hitl_confirm"]:
+    1. POST /a2a/tasks → run compiled.ainvoke(initial_state, config)
+       → if confirm_message set (graph halted at interrupt) → status=input-required
+    2. POST /a2a/tasks/{id}/resume → compiled.ainvoke(Command(resume={...}), config)
+       → graph resumes from hitl_confirm node → status=completed
+"""
 
 from __future__ import annotations
 
@@ -9,9 +16,9 @@ from typing import Any
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
-from shared.a2a.models import A2AResult, A2ATask, A2ATaskPayload, TaskStatus
+from shared.a2a.models import A2AResult, A2ATask, TaskStatus
 from shared.a2a.server import get_task, store_task, update_task_status
 
 logger = logging.getLogger(__name__)
@@ -34,6 +41,10 @@ class TaskSubmitResponse(BaseModel):
     status: str
 
 
+class ResumeRequest(BaseModel):
+    user_response: str
+
+
 # ---------------------------------------------------------------------------
 # Background processor
 # ---------------------------------------------------------------------------
@@ -45,103 +56,75 @@ async def _process_customer_task(
     redis: aioredis.Redis,
     memory: Any = None,
 ) -> None:
-    """Execute the Customer Agent ReAct loop for this task in the background.
+    """Execute Customer Agent StateGraph for this task in the background.
 
-    Continuation resume (HITL):
-        When params contains ``continuation.task_id`` (the interrupted task),
-        check for pending HITL state and route to ``resume_after_hitl()``.
+    Uses LangGraph compiled.ainvoke() with interrupt_before=["hitl_confirm"].
+    When the graph halts at the interrupt, sets task status to INPUT_REQUIRED.
     """
     await update_task_status(redis, task_id, TaskStatus.WORKING)
 
     try:
-        from customer_agent.core.react_loop import MemoryAwareReActLoop  # noqa: PLC0415
+        from customer_agent.graph import _compiled, _build_graph  # noqa: PLC0415
+
+        graph = _compiled
+        if graph is None:
+            from langgraph.checkpoint.memory import MemorySaver  # noqa: PLC0415
+
+            graph = _build_graph().compile(
+                checkpointer=MemorySaver(),
+                interrupt_before=["hitl_confirm"],
+            )
 
         params = task.params
-        continuation = params.get("continuation")
+        tenant_id = params.get("tenant_id", "default")
 
-        # ── Unpack A2ATaskPayload (if sent by DispatchEngine) ─────────────
-        payload: A2ATaskPayload | None = None
-        try:
-            payload = A2ATaskPayload.model_validate(task.params)
-        except (ValidationError, Exception):
-            payload = None  # Backward compat: old-format plain dict params
+        initial_state = {
+            "task_id": task_id,
+            "plan_id": params.get("plan_id", ""),
+            "original_message": params.get("message", params.get("original_message", "")),
+            "instructions": params.get("instructions", ""),
+            "conversation_history": params.get("conversation_history", []),
+            "dependency_results": params.get("dependency_results", {}),
+            "memory_context": "",
+            "action": "",
+            "customer_data": {},
+            "confirm_message": "",
+            "user_confirmation": "",
+            "result": {},
+        }
 
-        skill = task.skill or "lookup_customer"
-        loop = MemoryAwareReActLoop(skill=skill)
+        config = {
+            "configurable": {
+                "thread_id": task_id,
+                "memory": memory,
+                "tenant_id": tenant_id,
+                "tool_registry_url": os.environ.get("TOOL_REGISTRY_URL", "http://tool-registry:8001"),
+            }
+        }
 
-        # ── HITL continuation path ────────────────────────────────────────
-        if continuation and continuation.get("task_id"):
-            original_task_id = continuation["task_id"]
-            hitl_raw = await redis.get(f"hitl:{original_task_id}")
-            if hitl_raw:
-                user_input = continuation.get("user_input", "")
-                tool_registry_url = os.environ.get("TOOL_REGISTRY_URL", "")
-                result = await loop.resume_after_hitl(
-                    user_response=user_input,
-                    task_id=original_task_id,
-                    redis=redis,
-                    tool_registry_url=tool_registry_url,
-                )
+        result_state = await graph.ainvoke(initial_state, config)
 
-                if result.get("__scope_change__"):
-                    a2a_result = A2AResult(
-                        output={"__scope_change__": True, "new_request": result.get("new_request", "")},
-                        reasoning_summary="Người dùng thay đổi yêu cầu sang chủ đề mới",
-                        confidence=1.0,
-                    )
-                    await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
-                elif result.get("status") == "modify":
-                    modified_params = {**params, "message": result.get("user_feedback", user_input)}
-                    result2 = await loop.run(
-                        task_id=task_id, params=modified_params, redis=redis, memory=memory
-                    )
-                    if result2.get("__hitl__"):
-                        await update_task_status(
-                            redis, task_id, TaskStatus.INPUT_REQUIRED,
-                            input_request=result2.get("question", "Xác nhận thao tác?"),
-                        )
-                    else:
-                        a2a_result = A2AResult(
-                            output=result2.get("output", {}),
-                            reasoning_summary="Customer task re-processed after HITL modify",
-                            confidence=None,
-                        )
-                        await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
-                else:
-                    outcome = result.get("status", "cancelled")
-                    a2a_result = A2AResult(
-                        output=result,
-                        reasoning_summary=result.get("message", f"HITL {outcome}"),
-                        confidence=1.0,
-                    )
-                    await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
-                return
-        # ── End HITL continuation path ───────────────────────────────────
-
-        result = await loop.run(
-            task_id=task_id,
-            params=params,
-            memory=memory,
-            payload=payload,
-            redis=redis,
-        )
-
-        if result.get("__hitl__"):
-            # HITL gate triggered — pause task and ask user
+        # Detect interrupt: confirm_message set, user_confirmation empty
+        if result_state.get("confirm_message") and not result_state.get("user_confirmation"):
             await update_task_status(
                 redis,
                 task_id,
                 TaskStatus.INPUT_REQUIRED,
-                input_request=result.get("question", "Xác nhận thao tác?"),
+                input_request=result_state["confirm_message"],
             )
-        else:
-            output = result.get("output", {})
-            a2a_result = A2AResult(
-                output=output,
-                reasoning_summary=output.get("message", "Customer task completed") if isinstance(output, dict) else "Customer task completed",
-                confidence=None,
-            )
-            await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
+            return
+
+        # Terminal state
+        final_result = result_state.get("result", {})
+        output = {k: v for k, v in final_result.items() if not k.startswith("__")}
+        action = result_state.get("action", "lookup")
+
+        a2a_result = A2AResult(
+            output=output,
+            reasoning_summary=final_result.get("message", f"Customer {action} completed."),
+            tool_calls=[f"customer__{action}"] if final_result.get("status") == "success" else [],
+        )
+        await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
 
     except Exception as exc:
         logger.error(
@@ -151,6 +134,74 @@ async def _process_customer_task(
         )
         await update_task_status(
             redis, task_id, TaskStatus.FAILED, error=f"Customer processing failed: {exc}"
+        )
+
+
+async def _resume_customer_task(
+    task_id: str,
+    user_response: str,
+    redis: aioredis.Redis,
+    memory: Any = None,
+    tenant_id: str = "default",
+) -> None:
+    """Resume an interrupted Customer Agent graph via Command(resume=...)."""
+    await update_task_status(redis, task_id, TaskStatus.WORKING)
+
+    try:
+        from langgraph.types import Command  # noqa: PLC0415
+        from customer_agent.graph import _compiled, _build_graph  # noqa: PLC0415
+
+        graph = _compiled
+        if graph is None:
+            from langgraph.checkpoint.memory import MemorySaver  # noqa: PLC0415
+
+            graph = _build_graph().compile(
+                checkpointer=MemorySaver(),
+                interrupt_before=["hitl_confirm"],
+            )
+
+        config = {
+            "configurable": {
+                "thread_id": task_id,
+                "memory": memory,
+                "tenant_id": tenant_id,
+                "tool_registry_url": os.environ.get("TOOL_REGISTRY_URL", "http://tool-registry:8001"),
+            }
+        }
+
+        result_state = await graph.ainvoke(
+            Command(resume={"user_confirmation": user_response}),
+            config=config,
+        )
+
+        final_result = result_state.get("result", {})
+        output = {k: v for k, v in final_result.items() if not k.startswith("__")}
+        action = result_state.get("action", "lookup")
+
+        # Handle scope_change
+        if final_result.get("__scope_change__"):
+            a2a_result = A2AResult(
+                output={"__scope_change__": True, "new_request": final_result.get("new_request", "")},
+                reasoning_summary="Người dùng thay đổi yêu cầu sang chủ đề mới",
+                confidence=1.0,
+            )
+        else:
+            a2a_result = A2AResult(
+                output=output,
+                reasoning_summary=final_result.get("message", f"Customer {action} completed after confirmation."),
+                tool_calls=[f"customer__{action}"] if final_result.get("status") == "success" else [],
+            )
+
+        await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
+
+    except Exception as exc:
+        logger.error(
+            "customer_resume_failed",
+            extra={"task_id": task_id, "error": str(exc)},
+            exc_info=True,
+        )
+        await update_task_status(
+            redis, task_id, TaskStatus.FAILED, error=f"Customer resume failed: {exc}"
         )
 
 
@@ -164,6 +215,7 @@ async def submit_task(body: TaskSubmitRequest, request: Request) -> TaskSubmitRe
     """Accept A2A task and return task_id immediately (< 200ms)."""
     redis: aioredis.Redis = request.app.state.redis
     memory = getattr(request.app.state, "memory", None)
+
     task = A2ATask(skill=body.skill, params=body.params)
     await store_task(redis, task)
 
@@ -196,3 +248,32 @@ async def get_task_status(task_id: str, request: Request) -> dict[str, Any]:
     if task.input_request:
         response["input_request"] = task.input_request
     return response
+
+
+@router.post("/tasks/{task_id}/resume", status_code=202)
+async def resume_task(task_id: str, body: ResumeRequest, request: Request) -> dict[str, Any]:
+    """Resume an interrupted task after user provides confirmation.
+
+    Uses LangGraph Command(resume={"user_confirmation": body.user_response})
+    to resume from the hitl_confirm node checkpoint.
+    """
+    redis: aioredis.Redis = request.app.state.redis
+    memory = getattr(request.app.state, "memory", None)
+
+    task = await get_task(redis, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found or expired")
+    if task.status != TaskStatus.INPUT_REQUIRED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task {task_id} is not awaiting input (status={task.status.value})",
+        )
+
+    tenant_id = task.params.get("tenant_id", "default") if task.params else "default"
+
+    asyncio.create_task(
+        _resume_customer_task(task_id, body.user_response, redis, memory=memory, tenant_id=tenant_id),
+        name=f"customer_resume_{task_id}",
+    )
+
+    return {"task_id": task_id, "status": "working"}

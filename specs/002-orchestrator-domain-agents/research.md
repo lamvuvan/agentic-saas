@@ -198,6 +198,41 @@ raw_text
 
 ---
 
+## Decision 8: LangGraph StateGraph for Agent Reasoning & HITL
+
+**Decision**: Implement all agents (Orchestrator + Domain Agents) as LangGraph `StateGraph` instances rather than plain Python ReAct loops. Use `AsyncRedisSaver` for Orchestrator + Order Agent + Customer Agent; `MemorySaver` for BI Agent.
+
+**Rationale**:
+- **HITL interrupt/resume** — LangGraph `interrupt_before=["hitl_confirm"]` suspends graph execution at a node boundary and restores exact state on resume. Implementing equivalent suspend/resume manually requires custom serialization and is error-prone.
+- **Checkpointing** — `AsyncRedisSaver` automatically serializes the full `TypedDict` state to Redis after every node. On resume (or after a pod restart), the graph reloads from the last checkpoint via `thread_id`. This satisfies Constitution V (re-entrant plans) without custom code.
+- **Multi-step conditional routing** — `add_conditional_edges` allows expressing the `classify_intent → plan/chitchat` routing and `preview_order → hitl_confirm/extract_entities` loops declaratively. The graph topology is self-documenting and testable via `get_graph().draw_mermaid()`.
+- **`add_messages` reducer** — `Annotated[list[BaseMessage], add_messages]` on the `messages` field ensures message history is *appended*, not overwritten, across graph nodes — exactly what conversation state requires.
+- **Parallel node execution** — LangGraph's `asyncio.gather` batching (when no edges between nodes) will naturally support future parallel dispatch within the graph; `DispatchEngine` currently handles this explicitly but can be migrated to a `Send` fan-out pattern post-MVP.
+
+**Alternatives considered**:
+- **Plain `asyncio` ReAct loop** — works for single-turn tasks, but requires manual state serialization for HITL. Custom suspend/resume in A2A (pass state via Redis by hand) duplicates what LangGraph provides.
+- **LangGraph `create_react_agent`** — simpler API but does not support `interrupt_before` on custom nodes; also hides the node topology which reduces observability.
+- **LangGraph with Postgres checkpointer** — also valid but higher latency per node vs Redis; Redis is already in the stack and sufficient for ≤ 24h sessions.
+
+**Checkpointing strategy** (from Agentic_WorkPlan_v2.md section 1.9.5):
+
+| Service | `thread_id` | Checkpointer | TTL |
+|---|---|---|---|
+| Orchestrator | `session_id` | `AsyncRedisSaver` | 24 h |
+| Order Agent | `a2a_task_id` | `AsyncRedisSaver` | 1 h |
+| BI Agent | `a2a_task_id` | `MemorySaver` | per-task (in-proc) |
+| Customer Agent | `a2a_task_id` | `AsyncRedisSaver` | 1 h |
+
+**Key constraints**:
+- Pin versions: `langgraph>=0.2.0` + `langgraph-checkpoint-redis>=0.0.6` + `redis-py>=4.6` (async interface). Do NOT use legacy `aioredis`.
+- `AsyncRedisSaver` must be initialized with `await AsyncRedisSaver.from_conn_string(redis_url)` in the FastAPI lifespan; one instance per service is sufficient (connection pool managed internally).
+- LangGraph `Command(resume={"user_confirmation": ...})` is the only supported way to resume after `interrupt_before`. Pass it as the first positional arg to `ainvoke`.
+- `OrchestratorState.messages` uses `Annotated[list[BaseMessage], add_messages]` for append-only message accumulation — this is a LangGraph reducer, not a plain list replace.
+- BI Agent uses `MemorySaver` (not Redis) because it has no HITL interrupt and each task is stateless. Using `MemorySaver` means the graph cannot survive a pod restart mid-task — acceptable since BI queries are fast (< 5s) and have no pending confirmation state to lose.
+- Domain Agent graphs must be compiled with `interrupt_before=["hitl_confirm"]` even when the specific task doesn't trigger HITL; the interrupt is only reached when `should_confirm()` routes to `hitl_confirm`.
+
+---
+
 ## Decision 7: Vietnamese NLP Utilities
 
 **Decision**: Implement `vn_utils.py` with `normalize_text()`, `strip_honorifics()`, `words_to_numbers()`, and `extract_product_note()` pure functions. All tested with 50 unit test cases.

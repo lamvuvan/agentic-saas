@@ -14,23 +14,29 @@ from pydantic import BaseModel, Field
 
 
 class OrderAgentState(TypedDict, total=False):
+    """LangGraph state for Order Agent (per data-model.md, T038).
+
+    A2ATaskPayload fields + agent-specific processing fields.
+    Serialized to/from Redis via AsyncRedisSaver (thread_id=task_id, TTL=1h).
+    """
+
+    # A2ATaskPayload identity fields
     task_id: str
-    session_id: str
-    message: str
-    intent_modifier: str  # new | add | remove | cancel
-    entities: dict[str, Any] | None
-    product_matches: list[dict[str, Any]]
-    customer_id: str | None
-    customer_name: str | None
-    order_draft: dict[str, Any] | None
-    confirmation: str | None  # user's confirmation input
-    order_result: dict[str, Any] | None
-    requires_input: bool
-    input_request: str
-    status: str  # building | awaiting_confirm | confirmed | submitted | cancelled | error
-    error: str | None
-    reasoning_summary: str
-    tool_calls: list[str]
+    plan_id: str
+    original_message: str
+    instructions: str
+    conversation_history: list
+    dependency_results: dict
+
+    # Agent-specific processing fields
+    memory_context: str
+    entities: dict  # OrderEntities serialized as dict
+    matched_products: list  # list[ProductMatch] serialized as dicts
+    customer: dict  # {customer_id, customer_name, not_found}
+    order_preview: dict  # {items, total_estimate, ready, confirm_message}
+    confirm_message: str  # presented to user before interrupt
+    user_confirmation: str  # populated by Command(resume={"user_confirmation": ...})
+    result: dict  # final A2AResult output
 
 
 # ---------------------------------------------------------------------------
