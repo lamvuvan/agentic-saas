@@ -1447,6 +1447,355 @@ task\_type=\"confirm\_message\" \# dùng gpt-4o-mini
   **failed**            Exception hoặc user cancel   Task thất bại, error message trả về
   --------------------- ---------------------------- -------------------------------------------------------------------------------------------
 
+**1.8 Task Dispatch & Dependency Engine --- Orchestrator Giao Task Cho
+Agent**
+
+  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **3 vấn đề cần giải quyết:** (1) Mỗi agent nhận đủ context để tự xử lý đúng intent. (2) Task độc lập chạy song song. (3) Task phụ thuộc chờ upstream xong mới dispatch, kèm kết quả upstream. Orchestrator quản lý toàn bộ dependency graph --- agents không cần biết nhau.
+  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+**A2A Task Payload --- Context Đủ Để Agent Tự Xử Lý**
+
+\# Mỗi task gửi đến Domain Agent phải mang đủ 4 nhóm thông tin:
+
+class A2ATaskPayload(BaseModel):
+
+\# ── 1. Identity & Traceability ──────────────────────────────
+
+task\_id: str \# uuid --- dùng để poll A2A status
+
+plan\_id: str \# link về plan của Orchestrator
+
+sub\_goal\_sequence: int \# thứ tự sub\_goal trong plan
+
+session\_id: str
+
+tenant\_id: str
+
+\# ── 2. Intent --- Agent hiểu user muốn gì ────────────────────
+
+original\_message: str \# câu gốc của user, KHÔNG rút gọn
+
+skill: str \# \"create\_order\" \| \"bi\_query\"
+
+instructions: str \# Plan node sinh ra --- mô tả cụ thể task này cần làm
+gì
+
+\# bao gồm: scope, điều kiện, output mong đợi
+
+\# ── 3. Conversation context ─────────────────────────────────
+
+conversation\_history: list\[dict\] \# N turns gần nhất (mặc định 6
+turns)
+
+\# ── 4. Dependency results ────────────────────────────────────
+
+dependency\_results: dict\[str, dict\] \# agent\_name → result từ
+upstream
+
+\# Ví dụ: {\"order-agent\": {\"order\_id\": \"ORD-123\", \"total\":
+85000}}
+
+\# Agent downstream dùng để tham chiếu kết quả, không cần gọi lại
+
+**Plan Node Output --- Khai Báo Dependency Graph**
+
+\# Plan node (LLM) phải sinh ra instructions + depends\_on cho từng
+step.
+
+\# Đây là thông tin quyết định parallel vs sequential.
+
+\# Ví dụ: user hỏi \"xem doanh thu hôm nay và tạo đơn cho anh Lâm cafe
+đen\"
+
+\# → 2 task độc lập → chạy song song
+
+{
+
+\"routing\": {
+
+\"steps\": \[
+
+{
+
+\"sequence\": 1,
+
+\"agent\": \"bi-agent\",
+
+\"skill\": \"bi\_query\",
+
+\"depends\_on\": \[\],
+
+\"instructions\": \"Truy vấn tổng doanh thu ngày hôm nay (chỉ ngày hiện
+tại).
+
+Trả về: tổng doanh thu, số đơn, trung bình/đơn.\",
+
+},
+
+{
+
+\"sequence\": 2,
+
+\"agent\": \"order-agent\",
+
+\"skill\": \"create\_order\",
+
+\"depends\_on\": \[\],
+
+\"instructions\": \"Tạo đơn hàng cafe đen cho khách hàng Lâm.
+
+Tìm khách Lâm trước, sau đó tạo đơn sau khi xác nhận.\",
+
+}
+
+\]
+
+}
+
+}
+
+\# Ví dụ: user hỏi \"sau khi tạo đơn xong thì cho tôi xem tổng doanh thu
+hôm nay\"
+
+\# → BI phụ thuộc Order → sequential
+
+{
+
+\"routing\": {
+
+\"steps\": \[
+
+{
+
+\"sequence\": 1,
+
+\"agent\": \"order-agent\",
+
+\"skill\": \"create\_order\",
+
+\"depends\_on\": \[\],
+
+\"instructions\": \"Tạo đơn hàng cafe đen cho khách Lâm.\",
+
+},
+
+{
+
+\"sequence\": 2,
+
+\"agent\": \"bi-agent\",
+
+\"skill\": \"bi\_query\",
+
+\"depends\_on\": \[\"order-agent\"\],
+
+\"instructions\": \"Sau khi đơn hàng được tạo xong, truy vấn tổng doanh
+thu hôm nay.
+
+Kết quả cần bao gồm cả đơn vừa tạo.\",
+
+}
+
+\]
+
+}
+
+}
+
+**Dispatch Engine --- Parallel & Sequential Tự Động**
+
+\# orchestrator/core/dispatch\_engine.py
+
+class DispatchEngine:
+
+\"\"\"Quản lý dependency graph, dispatch parallel/sequential tự
+động.\"\"\"
+
+async def execute(self, steps: list\[dict\], plan\_id: str,
+
+state: OrchestratorState) -\> dict\[str, dict\]:
+
+completed: set\[str\] = set()
+
+results: dict\[str, dict\] = {} \# agent\_name → result
+
+remaining = list(steps)
+
+while remaining:
+
+\# Tìm các step đã đủ dependencies → có thể dispatch ngay
+
+ready = \[
+
+s for s in remaining
+
+if all(dep in results for dep in s.get(\"depends\_on\", \[\]))
+
+\]
+
+if not ready:
+
+raise RuntimeError(\"Circular dependency detected in plan\")
+
+\# Dispatch tất cả ready steps song song
+
+dispatched = await asyncio.gather(\*\[
+
+self.\_dispatch\_one(step, plan\_id, state, results)
+
+for step in ready
+
+\])
+
+\# Lưu kết quả, cập nhật tracking
+
+for step, result in zip(ready, dispatched):
+
+results\[step\[\"agent\"\]\] = result
+
+remaining.remove(step)
+
+return results
+
+async def \_dispatch\_one(self, step: dict, plan\_id: str,
+
+state: OrchestratorState,
+
+results: dict) -\> dict:
+
+\# Build payload --- inject dependency results từ upstream
+
+dep\_results = {dep: results\[dep\] for dep in step.get(\"depends\_on\",
+\[\])}
+
+payload = A2ATaskPayload(
+
+task\_id = str(uuid4()),
+
+plan\_id = plan\_id,
+
+sub\_goal\_sequence = step\[\"sequence\"\],
+
+session\_id = state.session\_id,
+
+tenant\_id = state.tenant\_id,
+
+original\_message = state.user\_message, \# luôn truyền câu gốc
+
+skill = step\[\"skill\"\],
+
+instructions = step\[\"instructions\"\], \# Plan node đã viết sẵn
+
+conversation\_history = state.history\[-6:\], \# 6 turns gần nhất
+
+dependency\_results = dep\_results, \# kết quả upstream
+
+)
+
+\# Link task\_id vào plan\_sub\_goals ngay sau dispatch
+
+task\_id = await self.a2a\_client.submit(step\[\"agent\"\], payload)
+
+await self.plan\_service.link\_task(plan\_id, step\[\"sequence\"\],
+task\_id)
+
+\# Poll đến khi xong, sync status vào DB
+
+return await self.\_poll\_until\_done(task\_id)
+
+**Domain Agent Dùng Payload Như Thế Nào**
+
+\# Trong Domain Agent ReAct loop --- đọc payload để build system prompt
+
+def build\_agent\_system\_prompt(payload: A2ATaskPayload,
+memory\_context: str) -\> str:
+
+sections = \[AGENT\_BASE\_PROMPT\]
+
+\# Luôn đặt instructions ở đầu --- đây là nhiệm vụ cụ thể
+
+sections.append(f\"\"\"
+
+\#\# Nhiệm Vụ Hiện Tại
+
+{payload.instructions}
+
+\#\# Yêu Cầu Gốc Của Người Dùng
+
+\"{payload.original\_message}\"
+
+\"\"\")
+
+\# Inject dependency results nếu có
+
+if payload.dependency\_results:
+
+sections.append(\"\#\# Kết Quả Từ Bước Trước\")
+
+for agent\_name, result in payload.dependency\_results.items():
+
+sections.append(f\"- {agent\_name}: {json.dumps(result,
+ensure\_ascii=False)}\")
+
+sections.append(\"Tham chiếu kết quả trên nếu cần, không gọi lại.\")
+
+\# Memory context (semantic + episodic)
+
+if memory\_context:
+
+sections.append(memory\_context)
+
+return \"\\n\\n\".join(sections)
+
+**Instructions Generation --- Plan Node Viết Đủ Context Cho Agent**
+
+\# Prompt hướng dẫn Plan node sinh instructions chất lượng cao cho từng
+step
+
+PLAN\_INSTRUCTIONS\_GUIDE = \"\"\"
+
+Với mỗi step trong routing, hãy viết \"instructions\" đủ để agent tự xử
+lý
+
+mà không cần đọc lại conversation. Instructions phải bao gồm:
+
+1\. Scope cụ thể: agent cần làm gì (không phải agent khác làm gì)
+
+2\. Điều kiện hoặc ràng buộc nếu có (ví dụ: \"chỉ lấy ngày hôm nay\")
+
+3\. Output mong đợi: trả về gì, dạng nào
+
+4\. Nếu depends\_on không rỗng: đề cập cách dùng kết quả upstream
+
+KHÔNG viết instructions chung chung như \"xử lý yêu cầu của user\".
+
+KHÔNG lặp lại toàn bộ câu gốc --- chỉ extract phần liên quan đến agent
+này.
+
+Ví dụ tốt (bi-agent, depends\_on=\[order-agent\]):
+
+\"Sau khi đơn \#ORD vừa tạo xong, truy vấn doanh thu hôm nay bao gồm cả
+đơn mới.
+
+Trả về: tổng doanh thu, số đơn, top 3 sản phẩm bán chạy nhất.\"
+
+Ví dụ kém:
+
+\"Truy vấn doanh thu theo yêu cầu của user.\" ← quá chung chung
+
+\"\"\"
+
+**Tóm Tắt --- Orchestrator Đảm Bảo Đúng Intent Qua 3 Cơ Chế**
+
+  ------------------------- ----------------------- ------------------------------------------------------------------------------------
+  **Cơ chế**                **Thành phần**          **Đảm bảo gì**
+  **original\_message**     A2ATaskPayload          Agent luôn có câu gốc → không suy diễn sai ý user do chỉ đọc instructions
+  **instructions**          Plan node (LLM sinh)    Scope rõ ràng cho từng agent --- không làm thừa, không bỏ sót
+  **dependency\_results**   DispatchEngine inject   Agent downstream dùng kết quả thực từ upstream --- không cần gọi lại, không đoán
+  **depends\_on**           DispatchEngine graph    Parallel khi independent, sequential khi có dependency --- tự động, không hardcode
+  ------------------------- ----------------------- ------------------------------------------------------------------------------------
+
 **2. Tool Registry v1 --- Config-Based**
 
   ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1708,27 +2057,28 @@ xong.
 
 **3.1 Task Breakdown**
 
-  ---------- ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- ----------------------------------------------------------------------------------------------------------------------------- -------------
-  **Ngày**   **Công việc**                                                                                                                                                                                         **Owner**   **Deliverable**                                                                                                               **Ưu tiên**
-  **1**      Khởi tạo monorepo: pyproject.toml, shared/ lib (auth\_context, llm\_client, models), Makefile, .env.example, pre-commit hooks                                                                         TL          *Repo clone được, \`make dev\` chạy*                                                                                          **P0**
-  **1**      Docker Compose 4 services: orchestrator:8000, tool-registry:8001, order-agent:8002, bi-agent:8003 --- mỗi service /health endpoint                                                                    SE          *\`docker compose up\` --- 4 services healthy*                                                                                **P0**
-  **2**      shared/llm.py: OpenAI async wrapper, select\_model(task\_type) từ config, structured output (response\_format=json\_object), retry logic                                                              AI          *llm.py unit test: intent/entity task types*                                                                                  **P0**
-  **2**      shared/auth\_context.py + AuthForwardMiddleware --- copy vào tất cả services; unit test: token set/get trong async context                                                                            SE          *Auth forward test pass 100%*                                                                                                 **P0**
-  **3**      Tool Registry: config\_loader.py đọc tools.yaml → build ToolDefinition + dynamic handler; GET /tools; POST /tools/{name}/execute                                                                      SE          *3 tools load đúng; curl test get\_customers OK*                                                                              **P0**
-  **3**      Tool Registry: HTTP adapter dùng auth\_context.\_auth\_headers(); timeout=10s; retry=2; error mapping tiếng Việt                                                                             SE          *Adapter test với mock server*                                                                                                **P0**
-  **4**      ToolRegistryClient (shared): get\_openai\_tools(namespace) convert sang OpenAI function format; execute(name, params) forward token qua header                                                        AI          *Client test: tools load + execute mock tool*                                                                                 **P0**
-  **4**      Orchestrator LangGraph: OrchestratorState TypedDict, graph compile với nodes stub, Redis checkpointer, session manager                                                                                AI          *Graph compile; state persist qua Redis*                                                                                      **P0**
-  **4**      DB setup: Alembic init, migration 001\_plans.sql (bảng plans + plan\_sub\_goals đầy đủ cột incl. a2a\_task\_id); asyncpg pool; alembic upgrade head chạy tự động khi Docker Compose start             SE          *\`docker compose up\` → migration tự chạy; PlanService unit test: create\_plan/link\_task/sync\_from\_task/get\_plan pass*   **P0**
-  **5**      Intent Classifier node: GPT-4o-mini, system prompt + 8 few-shot (order/bi/chitchat), structured output JSON, test 20 câu tiếng Việt                                                                   AI          *Accuracy ≥ 90% trên 20 test cases*                                                                                           **P0**
-  **5**      A2A Server skeleton cho Order Agent và BI Agent: POST /a2a/tasks, GET /a2a/tasks/{id}, GET /.well-known/agent.json (Agent Card); task status: submitted→working→completed                             SE          *Postman test A2A flow; agent card trả đúng JSON*                                                                             **P0**
-  **6**      AgentRegistry (Orchestrator): fetch /.well-known/agent.json từ seed URLs khi startup, background refresh mỗi 60s, health tracking, build\_prompt\_context()                                           AI          *AgentRegistry test: thêm agent mới → tự xuất hiện trong prompt context sau ≤ 60s*                                            **P0**
-  **6**      Orchestrator A2A Client: send\_task\_a2a(agent, skill, params) → submit → poll → return; forward auth header; timeout 30s                                                                             AI          *A2A Client test với stub Domain Agent*                                                                                       **P0**
-  **6**      DB migration 003\_orchestrator\_memory.sql: bảng orchestrator\_memory; OrchestratorMemoryService (retrieve\_patterns/store\_pattern/find\_similar\_plans/extract\_and\_store)                         SE          *Migration chạy; OrchestratorMemoryService unit test pass*                                                                    **P1**
-  **6**      Plan node (GPT-4o): dual-layer output {display, routing}; inject AgentRegistry + OrchestratorMemoryService context (routing\_patterns + similar\_plans) vào system prompt                             AI          *Plan node tham khảo memory; goal rõ nghĩa nghiệp vụ*                                                                         **P1**
-  **6**      Plan persistence + learning: PlanService.create\_plan() → link\_task() → sync\_from\_task(); khi plan completed → OrchestratorMemoryService.extract\_and\_store(); GET /plans/{session\_id}/current   SE          *API plan realtime; memory tích lũy sau mỗi completed plan*                                                                   **P1**
-  **7**      E2E integration test: 5 order + 3 bi + 2 chitchat → Orchestrator → A2A → Domain stub → Tool Registry mock → response; tất cả pass                                                                     All         *pytest e2e pass; demo video 3 phút*                                                                                          **P0**
-  **7**      Logging middleware: request\_id, session\_id, intent, model, latency\_ms, tokens --- JSON structured log mọi service                                                                                  SE          *Log đầy đủ cho mọi request*                                                                                                  **P1**
-  ---------- ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- ----------------------------------------------------------------------------------------------------------------------------- -------------
+  ---------- --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- ----------------------------------------------------------------------------------------------------------------------------- -------------
+  **Ngày**   **Công việc**                                                                                                                                                                                                               **Owner**   **Deliverable**                                                                                                               **Ưu tiên**
+  **1**      Khởi tạo monorepo: pyproject.toml, shared/ lib (auth\_context, llm\_client, models), Makefile, .env.example, pre-commit hooks                                                                                               TL          *Repo clone được, \`make dev\` chạy*                                                                                          **P0**
+  **1**      Docker Compose 4 services: orchestrator:8000, tool-registry:8001, order-agent:8002, bi-agent:8003 --- mỗi service /health endpoint                                                                                          SE          *\`docker compose up\` --- 4 services healthy*                                                                                **P0**
+  **2**      shared/llm.py: OpenAI async wrapper, select\_model(task\_type) từ config, structured output (response\_format=json\_object), retry logic                                                                                    AI          *llm.py unit test: intent/entity task types*                                                                                  **P0**
+  **2**      shared/auth\_context.py + AuthForwardMiddleware --- copy vào tất cả services; unit test: token set/get trong async context                                                                                                  SE          *Auth forward test pass 100%*                                                                                                 **P0**
+  **3**      Tool Registry: config\_loader.py đọc tools.yaml → build ToolDefinition + dynamic handler; GET /tools; POST /tools/{name}/execute                                                                                            SE          *3 tools load đúng; curl test get\_customers OK*                                                                              **P0**
+  **3**      Tool Registry: HTTP adapter dùng auth\_context.\_auth\_headers(); timeout=10s; retry=2; error mapping tiếng Việt                                                                                                   SE          *Adapter test với mock server*                                                                                                **P0**
+  **4**      ToolRegistryClient (shared): get\_openai\_tools(namespace) convert sang OpenAI function format; execute(name, params) forward token qua header                                                                              AI          *Client test: tools load + execute mock tool*                                                                                 **P0**
+  **4**      Orchestrator LangGraph: OrchestratorState TypedDict, graph compile với nodes stub, Redis checkpointer, session manager                                                                                                      AI          *Graph compile; state persist qua Redis*                                                                                      **P0**
+  **4**      DB setup: Alembic init, migration 001\_plans.sql (bảng plans + plan\_sub\_goals đầy đủ cột incl. a2a\_task\_id); asyncpg pool; alembic upgrade head chạy tự động khi Docker Compose start                                   SE          *\`docker compose up\` → migration tự chạy; PlanService unit test: create\_plan/link\_task/sync\_from\_task/get\_plan pass*   **P0**
+  **5**      Intent Classifier node: GPT-4o-mini, system prompt + 8 few-shot (order/bi/chitchat), structured output JSON, test 20 câu tiếng Việt                                                                                         AI          *Accuracy ≥ 90% trên 20 test cases*                                                                                           **P0**
+  **5**      A2A Server skeleton cho Order Agent và BI Agent: POST /a2a/tasks, GET /a2a/tasks/{id}, GET /.well-known/agent.json (Agent Card); task status: submitted→working→completed                                                   SE          *Postman test A2A flow; agent card trả đúng JSON*                                                                             **P0**
+  **6**      AgentRegistry (Orchestrator): fetch /.well-known/agent.json từ seed URLs khi startup, background refresh mỗi 60s, health tracking, build\_prompt\_context()                                                                 AI          *AgentRegistry test: thêm agent mới → tự xuất hiện trong prompt context sau ≤ 60s*                                            **P0**
+  **6**      Orchestrator A2A Client: send\_task\_a2a(agent, skill, params) → submit → poll → return; forward auth header; timeout 30s                                                                                                   AI          *A2A Client test với stub Domain Agent*                                                                                       **P0**
+  **6**      DB migration 003\_orchestrator\_memory.sql: bảng orchestrator\_memory; OrchestratorMemoryService (retrieve\_patterns/store\_pattern/find\_similar\_plans/extract\_and\_store)                                               SE          *Migration chạy; OrchestratorMemoryService unit test pass*                                                                    **P1**
+  **6**      Plan node (GPT-4o): dual-layer output {display, routing{steps\[{sequence,agent,skill,depends\_on,instructions}\]}}; instructions đủ context cho agent tự xử lý; inject AgentRegistry + OrchestratorMemoryService            AI          *Plan sinh đúng depends\_on; instructions rõ scope; test 3 cases: parallel/sequential/single*                                 **P1**
+  **6**      DispatchEngine: dependency graph resolver, asyncio.gather cho parallel steps, inject dependency\_results vào downstream payload, A2ATaskPayload model đầy đủ (original\_message/instructions/history/dependency\_results)   SE          *Test: 2 task parallel chạy đúng; 1 task sequential nhận đúng upstream result*                                                **P0**
+  **6**      Plan persistence + learning: PlanService.create\_plan() → link\_task() → sync\_from\_task(); khi plan completed → OrchestratorMemoryService.extract\_and\_store(); GET /plans/{session\_id}/current                         SE          *API plan realtime; memory tích lũy sau mỗi completed plan*                                                                   **P1**
+  **7**      E2E integration test: 5 order + 3 bi + 2 chitchat → Orchestrator → A2A → Domain stub → Tool Registry mock → response; tất cả pass                                                                                           All         *pytest e2e pass; demo video 3 phút*                                                                                          **P0**
+  **7**      Logging middleware: request\_id, session\_id, intent, model, latency\_ms, tokens --- JSON structured log mọi service                                                                                                        SE          *Log đầy đủ cho mọi request*                                                                                                  **P1**
+  ---------- --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- ----------------------------------------------------------------------------------------------------------------------------- -------------
 
 **4. Sprint 2 --- Core Agents: Order & BI (Ngày 8--14)**
 

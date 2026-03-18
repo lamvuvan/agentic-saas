@@ -280,6 +280,32 @@
 
 ---
 
+## Phase 8d: User Story 11 — Parallel & Sequential Task Dispatch (Priority: P1)
+
+**Goal**: The Orchestrator dispatches independent plan steps in parallel via `asyncio.gather` and sequential steps in dependency order. Each Domain Agent receives an `A2ATaskPayload` with full context: `instructions` (per-step goal), `original_message`, `conversation_history` (last 6 turns), and `dependency_results` from upstream agents. `build_agent_system_prompt(payload, memory_context)` assembles these into the LLM system prompt.
+
+**Independent Test**: Submit a combined order+BI request producing two independent steps (`depends_on: []`). Verify both A2A tasks are submitted within 200ms of each other. Submit a sequential request where step 2 `depends_on: ["order-agent"]` — verify step 2's `A2ATaskPayload.dependency_results` contains step 1's result.
+
+### Tests (write first — must FAIL before implementation)
+
+- [x] T118 [P] [US11] Write integration tests for DispatchEngine: parallel dispatch submits two independent steps concurrently (verify timestamps within 200ms), sequential dispatch waits for dependency and injects result into A2ATaskPayload.dependency_results, upstream failure marks downstream step as failed in tests/002-orchestrator-domain-agents/integration/test_dispatch_engine.py
+- [x] T119 [P] [US11] Write unit tests for DispatchEngine in tests/002-orchestrator-domain-agents/unit/test_dispatch_engine.py: steps with empty depends_on dispatched via asyncio.gather in the same round, downstream step dispatched only after upstream completes, A2ATaskPayload.dependency_results populated from upstream A2AResult.output, upstream failure sets downstream status=failed without dispatching
+
+### Implementation
+
+- [x] T120 [P] [US11] Update shared/a2a/models.py: add A2ATaskPayload Pydantic v2 model with fields task_id (UUID str), plan_id (UUID str), sub_goal_sequence (int), session_id (str), tenant_id (str), original_message (str), skill (str), instructions (str, default ""), conversation_history (list[dict], default []), dependency_results (dict[str, dict], default {}); update PlanStep to add depends_on: list[str] = [] (agent names, not step_ids) and instructions: str = "" fields; both fields required in schema, default empty for backward compatibility
+- [x] T121 [US11] Create orchestrator/core/dispatch_engine.py: DispatchEngine class with execute(steps: list[PlanStep], session: UserSession, plan_id: str, tenant_id: str, plan_service: PlanService, registry: AgentRegistry) → dict[str, dict]; execute() iterates rounds: find ready steps (all agents in depends_on present in results dict), dispatch ready steps in parallel via asyncio.gather(_dispatch_one(...)), collect results, repeat until all steps dispatched or failed; if upstream step result["status"] == "failed", mark all downstream dependents failed without dispatching; _dispatch_one(step, dependency_results, session, plan_id, tenant_id) → builds A2ATaskPayload(task_id=new_uuid, plan_id, sub_goal_sequence=step.sequence, session_id, tenant_id, original_message=session.last_user_message, skill=step.skill, instructions=step.instructions, conversation_history=session.get_last_n_turns(6), dependency_results), calls plan_service.link_task(), submits to agent URL via a2a_client, polls for result, calls plan_service.sync_from_task(), returns result dict
+- [x] T122 [US11] Update orchestrator/prompts/plan_v1.md: add to routing step schema `"depends_on": ["agent-name-if-dependency"]` and `"instructions": "Vietnamese description of this specific step's goal"`; instruct LLM: steps with no dependencies MUST have `depends_on: []`; add dependency example (step 2 depends_on order-agent); update both few-shot examples to include depends_on + instructions for every routing step
+- [x] T123 [US11] Update orchestrator/nodes/a2a_dispatch.py dispatch_plan(): replace manual sequential A2A loop with DispatchEngine instantiation; pass plan_service, registry, session to DispatchEngine.execute(steps); results dict returned by DispatchEngine replaces manual step result collection; keep existing plan_service.link_task/sync_from_task calls inside DispatchEngine._dispatch_one
+- [x] T124 [P] [US11] Update order_agent/core/react_loop.py: add build_agent_system_prompt(payload: A2ATaskPayload | None, memory_context: str) → str; sections: base agent role prompt, then if payload: `## Nhiệm Vụ Hiện Tại\n{payload.instructions}`, `## Yêu Cầu Gốc\n{payload.original_message}`, then if payload.dependency_results: `## Kết Quả Từ Bước Trước\n{formatted_dependency_results}`, then memory_context; update MemoryAwareReActLoop.run() signature to accept payload: A2ATaskPayload | None = None and call build_agent_system_prompt(payload, memory_context) instead of bare base prompt
+- [x] T125 [P] [US11] Update bi_agent/core/react_loop.py: same build_agent_system_prompt() pattern as T124 — base BI agent role prompt + instructions + original_message + dependency_results (if non-empty) + memory_context; update MemoryAwareReActLoop.run() signature identically
+- [x] T126 [US11] Update order_agent/a2a_server.py _process_order_task(): at task start, attempt A2ATaskPayload.model_validate(task.params) wrapped in try/except ValidationError; if valid payload, pass payload to MemoryAwareReActLoop.run(task_id=task_id, payload=payload, memory=memory); if validation fails (old dict-format params), pass payload=None for backward compatibility; extract session_id and tenant_id from payload if available
+- [x] T127 [P] [US11] Update bi_agent/a2a_server.py _process_bi_task(): same A2ATaskPayload.model_validate(task.params) unpacking pattern as T126 with ValidationError fallback; pass payload to MemoryAwareReActLoop.run()
+
+**Checkpoint**: Parallel & Sequential Task Dispatch functional — independent steps dispatched concurrently; downstream agents receive dependency_results; build_agent_system_prompt injects instructions + context into every Domain Agent LLM call (SC-022 + SC-023)
+
+---
+
 ## Phase 8: Polish & Cross-Cutting Concerns
 
 **Purpose**: Eval harness, observability, CLAUDE.md, security audit
@@ -309,6 +335,7 @@
 - **Phase 7b (US8 — Domain Agent Memory)**: Depends on Phase 4b (002_agent_memory.sql references plans table via FK); depends on Phases 5 + 6 (extends order_agent and bi_agent a2a_server); can run in parallel with Phase 7
 - **Phase 8b (US9 — Orchestrator Memory)**: Depends on Phase 4b (plans table must exist for find_similar_plans); depends on Phase 4 (plan.py, main.py to extend); can run in parallel with Phase 7b
 - **Phase 8c (US10 — HITL)**: Depends on Phase 7b (MemoryAwareReActLoop in order_agent/core/react_loop.py and bi_agent/core/react_loop.py must exist to add _execute_tool gate); can run in parallel with Phase 8b (different files)
+- **Phase 8d (US11 — Dispatch Engine)**: Depends on Phase 4b (PlanService, A2A dispatch loop exist); depends on Phase 8c (MemoryAwareReActLoop.run() signature must exist before adding payload param); T120 (models) can run in parallel with 8c; T124–T127 run after 8c MemoryAwareReActLoop is in place
 - **Phase 8 (Polish)**: Depends on all previous phases
 
 ### User Story Dependencies
@@ -320,6 +347,8 @@
 - **US7 (Plan Visibility) → US9 (Orchestrator Memory)**: find_similar_plans() queries the plans table; 003_orchestrator_memory.sql depends on plans table existing
 - **US1 (Intent Routing) → US9 (Orchestrator Memory)**: OrchestratorMemoryService is wired into plan.py and main.py established in US1
 - **US8 (Domain Agent Memory) → US10 (HITL)**: MemoryAwareReActLoop in react_loop.py must exist before adding _execute_tool HITL gate and resume_after_hitl()
+- **US10 (HITL) → US11 (Dispatch Engine)**: MemoryAwareReActLoop.run() must be stable before adding payload param and build_agent_system_prompt(); A2A dispatch loop must exist before replacing with DispatchEngine
+- **US7 (Plan Visibility) → US11 (Dispatch Engine)**: DispatchEngine.execute() takes plan_service param and calls link_task/sync_from_task internally
 
 ### Within Each Phase
 
@@ -407,6 +436,19 @@ Sequential (after T108–T109 written, T110–T111 done):
 Parallel with T115: T116 (bi react_loop) → T117 (bi a2a_server)
 ```
 
+### Phase 8d (US11) — Parallel models + tests before sequential DispatchEngine wiring
+
+```
+Parallel: T118 (integration tests), T119 (unit tests), T120 (models update)
+
+Sequential (after T118–T119 written, T120 done):
+  T121 (DispatchEngine) → T122 (plan_v1.md) → T123 (a2a_dispatch.py)
+
+Parallel with T123: T124 (order react_loop) + T125 (bi react_loop)
+  After T124: T126 (order a2a_server)
+  After T125: T127 (bi a2a_server)
+```
+
 ---
 
 ## Implementation Strategy
@@ -432,6 +474,7 @@ Parallel with T115: T116 (bi react_loop) → T117 (bi a2a_server)
 8. US8 → Domain Agent Memory → Agents learn from past tasks (depends on US7 for plans FK, US2/US3 for a2a_server)
 9. US9 → Orchestrator Memory → Orchestrator learns routing strategies at meta-level (depends on US7 for plans table, US1 for plan.py/main.py)
 10. US10 → HITL → Every mutating tool requires explicit user confirmation before execution (depends on US8 for MemoryAwareReActLoop structure)
+11. US11 → Dispatch Engine → Parallel + sequential dispatch with A2ATaskPayload context injection (depends on US10 for stable MemoryAwareReActLoop, US7 for PlanService)
 
 ### Parallel Team Strategy
 
@@ -460,9 +503,10 @@ All three stories are independently testable once the A2A backbone exists.
 | Phase 7b | Domain Agent Memory | T089–T098 | US8 |
 | Phase 8b | Orchestrator Memory | T099–T107 | US9 |
 | Phase 8c | HITL Confirmation | T108–T117 | US10 |
+| Phase 8d | Dispatch Engine + A2ATaskPayload | T118–T127 | US11 |
 | Phase 8 | Polish | T067–T073 | — |
 
-**Total**: 115 tasks across 12 phases (T074–T078: AgentRegistry; T079–T088: Plan Visibility / US7; T089–T098: Domain Agent Memory / US8; T099–T107: Orchestrator Memory / US9; T108–T117: HITL / US10)
+**Total**: 125 tasks across 13 phases (T074–T078: AgentRegistry; T079–T088: Plan Visibility / US7; T089–T098: Domain Agent Memory / US8; T099–T107: Orchestrator Memory / US9; T108–T117: HITL / US10; T118–T127: Dispatch Engine + A2ATaskPayload / US11)
 
 ---
 
@@ -482,6 +526,11 @@ All three stories are independently testable once the A2A backbone exists.
 - Plan prompt injection (T104–T105): when routing_memory and similar_plans are empty (new tenant, no history), render empty strings — GPT-4o sees clean prompt with no ghost sections
 - HITL tool gate (T113): read `requires_confirmation` from ToolRegistryClient tool definition before every tool call in _execute_tool; missing field or False = execute immediately; True = pause and return __hitl__ dict
 - HITL continuation routing (T115, T117): distinguish HITL pause from order-preview pause by `task.state["hitl_pending"]` boolean flag — HITL routes to resume_after_hitl(), order-preview routes to LangGraph graph resume
+- A2ATaskPayload backward compat (T126, T127): wrap `A2ATaskPayload.model_validate(task.params)` in `try/except ValidationError` — old-format tasks (plain dict without task_id UUID) fall back to `payload=None` so existing tests continue to pass
+- DispatchEngine round loop (T121): a "round" = one call to asyncio.gather over all ready steps; repeat until `len(results) == len(steps)` or no new steps become ready (deadlock detection → fail remaining steps); max rounds = len(steps) to prevent infinite loop
+- depends_on uses agent names (T120, T121, T122): `PlanStep.depends_on: list[str]` contains agent names (e.g. `["order-agent"]`), NOT step_ids — DispatchEngine checks `all(dep in results for dep in step.depends_on)`
+- build_agent_system_prompt fallback (T124, T125): when payload is None (backward compat or plain task), use base system prompt only — no crash; all sections guarded with `if payload:` checks
+- conversation_history in payload (T121): populated from `session.get_last_n_turns(6)` — each turn is `{"role": "user"|"assistant", "content": str}`; Domain Agent react_loop does NOT need to inject these into LangGraph state (session history already handled by LangGraph checkpointer); they are for context-only prompt injection via build_agent_system_prompt
 - resume_after_hitl scope_change branch (T114): return value propagates up to a2a_server which sets A2A task status to completed with output={"__scope_change__": True, "new_request": ...}; Orchestrator detects signal and re-routes request as a new top-level intent
 - No explicit replan gate needed for HITL modify/cancel branches — injecting user feedback into messages causes the LLM to re-reason automatically via the existing ReAct loop (Workplan §1.7 note)
 - Commit after each completed task or logical group; stop at each **Checkpoint** to validate independently before proceeding

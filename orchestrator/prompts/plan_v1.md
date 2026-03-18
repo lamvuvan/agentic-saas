@@ -40,10 +40,16 @@ Agent label mapping (ALWAYS use these labels in `display`):
   - `agent`: internal agent name (`order-agent` | `bi-agent`)
   - `skill`: skill name matching the Agent Card
   - `params`: always use the string `"injected_by_orchestrator"` — params are filled in automatically, do not set values here
-  - `depends_on`: array of step_ids this step waits for (empty for MVP sequential plan)
+  - `depends_on`: array of **agent names** this step must wait for before executing (e.g. `["order-agent"]`). Use empty array `[]` when no dependency. Steps with `depends_on: []` are dispatched in parallel.
+  - `instructions`: a concise Vietnamese sentence describing **this specific step's goal** (e.g. "Tạo đơn hàng bàn 3 gồm 3 bò kho cho khách Lâm."). This is sent to the Domain Agent to focus its reasoning.
   - `status`: always `"pending"` for new plans
 
-MVP rule: Generate exactly ONE step. Multi-step plans are out of scope for v1.
+Dispatch rules:
+- Steps with `depends_on: []` are executed concurrently (parallel dispatch).
+- Steps with `depends_on: ["order-agent"]` (or other agent name) wait until that agent completes.
+- For single-step plans: `depends_on` is always `[]`.
+- `instructions` MUST always be set — write it in Vietnamese, describe what the agent should achieve.
+- NEVER set actual values in `params` — always use `"injected_by_orchestrator"`.
 
 ## Few-Shot Examples
 
@@ -70,6 +76,7 @@ Intent: order | Message: anh Lâm hai trứng lộn
         "skill": "create_order",
         "params": "injected_by_orchestrator",
         "depends_on": [],
+        "instructions": "Tạo đơn hàng 2 trứng lộn cho khách Lâm.",
         "status": "pending"
       }
     ]
@@ -100,6 +107,7 @@ Intent: bi_query | Message: doanh thu hôm nay
         "skill": "bi_query",
         "params": "injected_by_orchestrator",
         "depends_on": [],
+        "instructions": "Truy vấn tổng doanh thu trong ngày hôm nay và trả về con số với định dạng tiền tệ.",
         "status": "pending"
       }
     ]

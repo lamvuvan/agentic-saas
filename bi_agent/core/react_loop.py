@@ -154,6 +154,41 @@ async def _classify_hitl_response(user_response: str, tool_name: str) -> str:
         return "cancel"
 
 
+def build_agent_system_prompt(
+    base_prompt: str,
+    payload: Any = None,
+    memory_context: str = "",
+) -> str:
+    """Assemble the BI Agent system prompt from A2ATaskPayload + memory context.
+
+    Sections injected (only when non-empty):
+    1. Base agent role prompt (always present)
+    2. ## Nhiệm Vụ Hiện Tại — payload.instructions (per-step goal from Plan LLM)
+    3. ## Yêu Cầu Gốc — payload.original_message (raw user message)
+    4. ## Kết Quả Từ Bước Trước — payload.dependency_results (upstream results)
+    5. memory_context (## Kiến Thức Tích Lũy + ## Bài Học Từ Task Tương Tự)
+    """
+    parts = [base_prompt]
+
+    if payload is not None:
+        if getattr(payload, "instructions", ""):
+            parts.append(f"## Nhiệm Vụ Hiện Tại\n{payload.instructions}")
+        if getattr(payload, "original_message", ""):
+            parts.append(f"## Yêu Cầu Gốc\n{payload.original_message}")
+        dep_results = getattr(payload, "dependency_results", {})
+        if dep_results:
+            lines = ["## Kết Quả Từ Bước Trước"]
+            for agent_name, result in dep_results.items():
+                output = result.get("output", result) if isinstance(result, dict) else result
+                lines.append(f"- **{agent_name}**: {json.dumps(output, ensure_ascii=False)[:300]}")
+            parts.append("\n".join(lines))
+
+    if memory_context:
+        parts.append(memory_context)
+
+    return "\n\n".join(parts)
+
+
 class MemoryAwareReActLoop:
     """Wraps run_bi_graph with memory retrieval, injection, and learning extraction."""
 
@@ -260,15 +295,27 @@ class MemoryAwareReActLoop:
         task_id: str,
         params: dict[str, Any],
         memory: "MemoryService | None",
+        payload: Any = None,
     ) -> dict[str, Any]:
         """Execute BI Agent pipeline with memory augmentation.
+
+        Args:
+            payload: Optional A2ATaskPayload — if provided, build_agent_system_prompt()
+                     injects instructions, original_message, and dependency_results.
 
         Returns same dict as run_bi_graph.
         """
         t0 = time.monotonic()
         tenant_id = params.get("_tenant_id", "default")
         plan_id = params.get("_plan_id")
-        message = params.get("message", "")
+        message = (
+            getattr(payload, "original_message", None)
+            or params.get("message", "")
+        )
+
+        if payload is not None:
+            tenant_id = getattr(payload, "tenant_id", tenant_id)
+            plan_id = getattr(payload, "plan_id", plan_id)
 
         # ── Step 1: Retrieve memories ─────────────────────────────────────
         semantic_mem: list[dict[str, Any]] = []
@@ -290,10 +337,16 @@ class MemoryAwareReActLoop:
             except Exception as exc:
                 logger.debug("memory_retrieval_failed", extra={"error": str(exc)})
 
-        # ── Step 2: Inject memory context into params ─────────────────────
+        # ── Step 2: Inject memory context + payload system prompt into params ──────
+        memory_context = _build_memory_context(semantic_mem, similar_tasks)
         augmented_params = {
             **params,
-            "_memory_context": _build_memory_context(semantic_mem, similar_tasks),
+            "_memory_context": memory_context,
+            "_system_prompt": build_agent_system_prompt(
+                base_prompt=params.get("_base_system_prompt", ""),
+                payload=payload,
+                memory_context=memory_context,
+            ),
         }
 
         # ── Step 3: Run the BI Agent pipeline ─────────────────────────────

@@ -152,6 +152,8 @@ async def invoke_chat(
             registry=registry,
             plan_service=plan_service,
             plan_id=pg_plan_id,
+            session={"session_id": session_id, "turns": history, "last_user_message": message},
+            tenant_id=tenant_id,
         )
         agent_results = results
 

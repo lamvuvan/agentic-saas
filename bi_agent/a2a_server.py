@@ -11,7 +11,9 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from shared.a2a.models import A2AResult, A2ATask, TaskStatus
+from pydantic import ValidationError
+
+from shared.a2a.models import A2AResult, A2ATask, A2ATaskPayload, TaskStatus
 from shared.a2a.server import get_task, store_task, update_task_status
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,13 @@ async def _process_bi_task(
         params = task.params
         continuation = params.get("continuation")
 
+        # ── Unpack A2ATaskPayload (if sent by DispatchEngine) ─────────────
+        payload: A2ATaskPayload | None = None
+        try:
+            payload = A2ATaskPayload.model_validate(task.params)
+        except (ValidationError, Exception):
+            payload = None  # Backward compat: old-format plain dict params
+
         # ── HITL continuation path ────────────────────────────────────────
         if continuation and continuation.get("task_id"):
             original_task_id = continuation["task_id"]
@@ -74,7 +83,7 @@ async def _process_bi_task(
                 return
         # ── End HITL continuation path ───────────────────────────────────
 
-        result = await loop.run(task_id=task_id, params=params, memory=memory)
+        result = await loop.run(task_id=task_id, params=params, memory=memory, payload=payload)
 
         if result.get("__hitl__"):
             await update_task_status(

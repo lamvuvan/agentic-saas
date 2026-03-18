@@ -73,7 +73,8 @@ orchestrator/                   # :8000 — Orchestrator Agent
 ├── core/
 │   ├── __init__.py
 │   ├── plan_service.py         # PlanService: create_plan, link_task, sync_from_task, _maybe_complete_plan, get_plan
-│   └── orchestrator_memory.py  # OrchestratorMemoryService: retrieve_patterns, store_pattern, find_similar_plans, extract_and_store
+│   ├── orchestrator_memory.py  # OrchestratorMemoryService: retrieve_patterns, store_pattern, find_similar_plans, extract_and_store
+│   └── dispatch_engine.py      # DispatchEngine: dependency-ordered execution; parallel asyncio.gather for independent steps; inject dependency_results into A2ATaskPayload
 ├── nodes/
 │   ├── intent_classify.py      # GPT-4o-mini, escalates to GPT-4o at confidence < 0.72
 │   ├── plan.py                 # GPT-4o, injects {agent_manifest}+{routing_memory}+{similar_plans}, fire-and-forget extract_and_store
@@ -96,7 +97,7 @@ order_agent/                    # :8002 — Order Domain Agent
 ├── models.py                   # OrderAgentState, OrderEntities, ProductMatch, OrderDraft, ResolvedOrderItem
 ├── core/
 │   ├── __init__.py
-│   └── react_loop.py           # MemoryAwareReActLoop: retrieve → inject context → run graph → extract learnings; _execute_tool() HITL gate; resume_after_hitl()
+│   └── react_loop.py           # MemoryAwareReActLoop: retrieve → inject context → run graph → extract learnings; _execute_tool() HITL gate; resume_after_hitl(); build_agent_system_prompt(payload, memory_context)
 ├── nodes/
 │   ├── extract_entities.py     # GPT-4o-mini Structured Output → OrderEntities
 │   ├── match_products.py       # FAISS search + LLM rerank for 0.65–0.84 range
@@ -114,7 +115,7 @@ bi_agent/                       # :8003 — BI Domain Agent
 ├── models.py                   # BIAgentState, BIQueryResult
 ├── core/
 │   ├── __init__.py
-│   └── react_loop.py           # MemoryAwareReActLoop (BI variant): inject retrieved sql_pattern/glossary_fix memories; _execute_tool() HITL gate for BI write tools
+│   └── react_loop.py           # MemoryAwareReActLoop (BI variant): inject retrieved sql_pattern/glossary_fix memories; _execute_tool() HITL gate for BI write tools; build_agent_system_prompt(payload, memory_context)
 ├── nodes/
 │   ├── schema_explorer.py      # Load config/bi_schema.yaml, cache schema context string
 │   ├── nl2sql.py               # GPT-4o, temperature=0, {{SCHEMA_CONTEXT}} injection
@@ -128,7 +129,7 @@ bi_agent/                       # :8003 — BI Domain Agent
 shared/                         # Cross-service shared libraries
 ├── a2a/
 │   ├── __init__.py             # Exports all A2A models
-│   ├── models.py               # A2ATask, A2AResult, AgentCard, ExecutionPlan, PlanStep, TaskStatus
+│   ├── models.py               # A2ATask, A2AResult, AgentCard, ExecutionPlan, PlanStep (+ depends_on, instructions), TaskStatus, A2ATaskPayload
 │   ├── client.py               # submit_task(), poll_task(), A2ATimeoutError
 │   └── server.py               # store_task(), get_task(), update_task_status() — Redis a2a:task:{id}
 ├── llm_client.py               # select_model(task_type), chat_completion_async(), ESCALATION_THRESHOLD=0.72
@@ -260,6 +261,48 @@ Tool definitions in `config/tools.yaml` are classified into two groups by `requi
 
 **Files**: `order_agent/core/react_loop.py` (MODIFIED: _execute_tool, _generate_confirm_message, resume_after_hitl), `bi_agent/core/react_loop.py` (same pattern), `config/tools.yaml` (MODIFIED: add requires_confirmation + impact_template), `shared/llm_client.py` (MODIFIED: confirm_message route)
 
+### Task Dispatch & Dependency Engine (A2ATaskPayload + DispatchEngine)
+
+The `a2a_dispatch.py` node is replaced by a `DispatchEngine` that supports parallel and sequential dispatch based on `depends_on` declarations in each `PlanStep`.
+
+**`A2ATaskPayload`** (Pydantic model in `shared/a2a/models.py`): four groups sent to Domain Agents:
+- **Identity**: `task_id`, `plan_id`, `sub_goal_sequence`, `session_id`, `tenant_id`
+- **Intent**: `original_message` (raw user message), `skill`, `instructions` (per-step goal string from Plan node LLM)
+- **Conversation**: `conversation_history: list[dict]` — last 6 turns from session
+- **Dependencies**: `dependency_results: dict[str, dict]` — upstream agent name → result dict
+
+**`PlanStep` enhancements** (in `shared/a2a/models.py`): add `depends_on: list[str] = []` and `instructions: str = ""`. The Plan node LLM generates both for every step.
+
+**`DispatchEngine`** at `orchestrator/core/dispatch_engine.py`:
+- `execute(steps, session, plan_id, tenant_id) -> dict[str, dict]`: iterates rounds until all steps are dispatched
+- Each round: find all ready steps (all entries in `depends_on` present in `results`), dispatch in parallel via `asyncio.gather(_dispatch_one(step, dependency_results))`, collect results
+- `_dispatch_one(step, dependency_results)`: builds `A2ATaskPayload`, calls A2A submit + poll, returns result dict
+- If upstream step fails, all dependent steps are skipped with `{"status": "failed", "error": "dependency failed"}`
+
+**`build_agent_system_prompt(payload: A2ATaskPayload, memory_context: str) -> str`** in Domain Agent `react_loop.py`:
+- Base system prompt for agent role (order/bi)
+- `## Nhiệm Vụ Hiện Tại\n{payload.instructions}`
+- `## Yêu Cầu Gốc\n{payload.original_message}`
+- `## Kết Quả Từ Bước Trước\n{dependency_results_formatted}` (only if `dependency_results` non-empty)
+- Memory context (`## Kiến Thức Tích Lũy`, `## Bài Học Từ Task Tương Tự`)
+
+**Plan node update**: `plan_v1.md` prompt instructs GPT-4o to output `depends_on` and `instructions` for every routing step. Example parallel plan (order + BI):
+```json
+{"steps": [
+  {"agent": "order-agent", "skill": "create_order", "depends_on": [], "instructions": "Tạo đơn hàng bàn 3 gồm 3 bò kho bánh mì cho khách Lâm."},
+  {"agent": "bi-agent",    "skill": "bi_query",     "depends_on": [], "instructions": "Truy vấn tổng doanh thu hôm nay."}
+]}
+```
+Example sequential plan (BI depends on order result):
+```json
+{"steps": [
+  {"agent": "order-agent", "skill": "create_order",  "depends_on": [],              "instructions": "Tạo đơn hàng cho khách."},
+  {"agent": "bi-agent",    "skill": "bi_query",       "depends_on": ["order-agent"], "instructions": "Tổng hợp doanh thu sau khi đơn vừa tạo."}
+]}
+```
+
+**Files**: `shared/a2a/models.py` (MODIFIED: PlanStep + A2ATaskPayload), `orchestrator/core/dispatch_engine.py` (NEW), `orchestrator/nodes/a2a_dispatch.py` (MODIFIED: delegate to DispatchEngine), `orchestrator/prompts/plan_v1.md` (MODIFIED: instruct LLM to output depends_on + instructions), `order_agent/core/react_loop.py` (MODIFIED: build_agent_system_prompt), `bi_agent/core/react_loop.py` (MODIFIED: build_agent_system_prompt)
+
 ### Voice: Out of Scope
 Voice input (US6, FR-007) is **removed from this plan**. The `/chat` endpoint accepts text only. If callers need voice-to-text, they perform STT client-side before calling the API. This eliminates the `faster-whisper` dependency, the `/voice` endpoint, and the `orchestrator/stt.py` module.
 
@@ -309,6 +352,7 @@ See [tasks.md](tasks.md) for the full task breakdown:
 | 8 — ~~Voice~~ (removed) | — | — |
 | 8b — Orchestrator Memory (US9) | migration 003, OrchestratorMemoryService, Plan node memory injection, routing learnings extraction | routing_pattern in system prompt ≤ next request; extraction ≤ 2s post-plan |
 | 8c — HITL (US10) | _execute_tool() HITL gate, _generate_confirm_message, resume_after_hitl (4 branches), tools.yaml requires_confirmation + impact_template | mutating tool never executes without prior user confirmation in 100% of test runs |
+| 8d — Dispatch Engine (US11) | A2ATaskPayload, PlanStep(depends_on+instructions), DispatchEngine, build_agent_system_prompt(), plan_v1.md update | independent steps dispatched in parallel; downstream steps receive dependency_results in 100% of test runs |
 | 9 — Polish | Eval runner + 4 YAML suites, structured logging, CLAUDE.md update | CI eval pipeline; 60+ golden test cases |
 
 ## Success Criteria
@@ -335,3 +379,5 @@ See [tasks.md](tasks.md) for the full task breakdown:
 | SC-019 | `routing_pattern` appears in Plan node system prompt on 2nd combined request | 100% | Integration tests |
 | SC-020 | Every mutating tool call pauses ReAct loop and transitions A2A to `input_required` | 100% | Integration tests |
 | SC-021 | HITL confirmation message contains action + data impact in Vietnamese; classification ≤ 500ms added latency | 100% | Integration tests |
+| SC-022 | Independent steps (both `depends_on: []`) dispatched concurrently; total latency ≤ max(step latencies) + 200ms overhead | 100% | Integration tests |
+| SC-023 | Downstream Domain Agent `A2ATaskPayload.dependency_results` contains upstream agent result | 100% | Integration tests |

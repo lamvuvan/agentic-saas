@@ -11,7 +11,9 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from shared.a2a.models import A2AResult, A2ATask, TaskStatus
+from pydantic import ValidationError
+
+from shared.a2a.models import A2AResult, A2ATask, A2ATaskPayload, TaskStatus
 from shared.a2a.server import get_task, store_task, update_task_status
 
 logger = logging.getLogger(__name__)
@@ -105,6 +107,13 @@ async def _process_order_task(
 
         loop = MemoryAwareReActLoop(skill="create_order")
 
+        # ── Unpack A2ATaskPayload (if sent by DispatchEngine) ─────────────
+        payload: A2ATaskPayload | None = None
+        try:
+            payload = A2ATaskPayload.model_validate(task.params)
+        except (ValidationError, Exception):
+            payload = None  # Backward compat: old-format plain dict params
+
         # ── HITL continuation path ────────────────────────────────────────
         # If the original task had a pending HITL gate, route to resume_after_hitl()
         # instead of the normal order graph checkpoint resume.
@@ -158,7 +167,7 @@ async def _process_order_task(
                 return
         # ── End HITL continuation path ───────────────────────────────────
 
-        result = await loop.run(task_id=task_id, params=params, redis=redis, memory=memory)
+        result = await loop.run(task_id=task_id, params=params, redis=redis, memory=memory, payload=payload)
 
         if result.get("status") == "input-required":
             await update_task_status(
