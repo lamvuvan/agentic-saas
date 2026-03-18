@@ -16,15 +16,15 @@ Code*
 
 **1. Kiến Trúc Tổng Quan**
 
-Hệ thống gồm 4 service độc lập, giao tiếp qua A2A và MCP, deploy bằng
-Docker Compose:
+Hệ thống gồm 4 service độc lập, giao tiếp qua A2A và Tool Registry HTTP
+API, deploy bằng Docker Compose:
 
   ------------------- ---------- -------------- -------------------------------------------------------------------------------------------------------------------------------------
   **Service**         **Port**   **Protocol**   **Trách nhiệm**
   **Orchestrator**    8000       REST / WS      Nhận request, phân loại intent (GPT-4o-mini), lập plan (GPT-4o), giao task cho Domain Agent qua A2A, tổng hợp response
-  **Tool Registry**   8001       MCP (HTTP)     Catalog tool từ YAML config; GET /tools · POST /tools/{name}/execute. Forward Bearer token từ header --- không lưu trữ.
-  **Order Agent**     8002       A2A + MCP      A2A server nhận task; tự reasoning (ReAct loop GPT-4o-mini); gọi Tool Registry để search product, get/create customer, create order
-  **BI Agent**        8003       A2A + MCP      A2A server nhận task; tự reasoning NL2SQL (GPT-4o); gọi Tool Registry để execute query PostgreSQL, format kết quả
+  **Tool Registry**   8001       HTTP REST      Catalog tool từ YAML config; GET /tools · POST /tools/{name}/execute. Forward Bearer token từ header --- không lưu trữ.
+  **Order Agent**     8002       A2A + HTTP     A2A server nhận task; tự reasoning (ReAct loop GPT-4o-mini); gọi Tool Registry để search product, get/create customer, create order
+  **BI Agent**        8003       A2A + HTTP     A2A server nhận task; tự reasoning NL2SQL (GPT-4o); gọi Tool Registry để execute query PostgreSQL, format kết quả
   ------------------- ---------- -------------- -------------------------------------------------------------------------------------------------------------------------------------
 
 **1.1 Communication Flow**
@@ -36,11 +36,34 @@ Docker Compose:
 | **Orchestrator → Domain Agent:** A2A --- POST /a2a/tasks + GET       |
 | /a2a/tasks/{id} (poll)                                               |
 |                                                                      |
-| **Domain Agent → Tool Registry:** MCP --- GET /tools?namespace=X +   |
-| POST /tools/{name}/execute                                           |
+| **Domain Agent → Tool Registry:** HTTP REST --- GET                  |
+| /tools?namespace=X + POST /tools/{name}/execute (MCP-compatible      |
+| convention, không dùng MCP SDK)                                      |
 |                                                                      |
 | **Auth:** Bearer token forward qua HTTP header xuyên suốt chuỗi ---  |
 | không lưu, không biến đổi                                            |
++----------------------------------------------------------------------+
+
+**1.1.1 Quyết Định Kiến Trúc --- Không Dùng MCP SDK Cho MVP**
+
+  -------------------- ------------------------------------------- --------------------------------------------------------------
+                       **MCP SDK chính thức**                      **HTTP REST (lựa chọn MVP)**
+  **Tool discovery**   MCP transport (stdio / SSE / HTTP stream)   GET /tools?namespace=X → JSON (đủ rồi)
+  **Tool execution**   MCP protocol message format                 POST /tools/{name}/execute → JSON (đủ rồi)
+  **Dependency**       mcp SDK, transport layer, protocol spec     httpx --- đã có sẵn trong stack
+  **Debug**            Cần hiểu MCP transport internals            curl/Postman là đủ
+  **Convention**       Chuẩn --- tương thích ecosystem rộng        MCP-compatible: cùng endpoint convention, cùng schema format
+  -------------------- ------------------------------------------- --------------------------------------------------------------
+
++----------------------------------------------------------------------+
+| **Kết luận:** Tool Registry HTTP API đã follow MCP convention (GET   |
+| /tools + POST /tools/execute + OpenAI tool schema). Không cần MCP    |
+| SDK cho MVP --- 2 agent cùng mạng, plain HTTP đủ. Khi cần tích hợp   |
+| external MCP server hoặc cho Claude.ai/Cursor gọi trực tiếp →        |
+| upgrade transport layer sau mà không cần đổi interface.              |
+|                                                                      |
+| **Post-MVP backlog:** Wrap Tool Registry bằng FastMCP để expose      |
+| chuẩn MCP --- tương thích với bất kỳ MCP client nào trong ecosystem. |
 +----------------------------------------------------------------------+
 
 **1.2 Model Routing**
