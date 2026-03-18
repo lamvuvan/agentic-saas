@@ -7,24 +7,25 @@
 
 ## Overview
 
-Staff at a retail/restaurant business interact with an AI assistant using natural language — including Vietnamese — to create orders and query business data. An Orchestrator receives every message, determines what the user wants, and routes the task to the appropriate specialist agent (Order Agent or BI Agent). Each specialist agent reasons through the task, calls the necessary tools, and returns a structured result. The Orchestrator assembles the final response for the user.
+Staff at a retail/restaurant business interact with an AI assistant using natural language — including Vietnamese — to create orders, query business data, and manage customer records. An Orchestrator receives every message, determines what the user wants, and routes the task to the appropriate specialist agent (Order Agent, BI Agent, or Customer Agent). Each specialist agent reasons through the task, calls the necessary tools, and returns a structured result. The Orchestrator assembles the final response for the user.
 
 ## User Scenarios & Testing
 
 ### User Story 1 — Intent Routing (Priority: P1)
 
-A staff member sends a free-text message. The Orchestrator correctly identifies whether it is an order request, a business intelligence query, or casual conversation, and routes it to the right specialist agent without the user having to specify what kind of request it is.
+A staff member sends a free-text message. The Orchestrator correctly identifies whether it is an order request, a business intelligence query, a customer management request, or casual conversation, and routes it to the right specialist agent without the user having to specify what kind of request it is.
 
 **Why this priority**: All downstream value depends on correct routing. Without accurate intent classification, every other capability is unusable.
 
-**Independent Test**: Send 20 diverse text messages covering order, BI, and conversational intents. Verify that at least 18/20 are classified correctly and routed to the matching agent stub (no real agent logic required).
+**Independent Test**: Send 20 diverse text messages covering order, BI, customer, and conversational intents. Verify that at least 18/20 are classified correctly and routed to the matching agent stub (no real agent logic required).
 
 **Acceptance Scenarios**:
 
 1. **Given** a staff member sends "cho tôi xem doanh thu hôm nay", **When** the Orchestrator processes the message, **Then** the request is classified as a BI query and forwarded to the BI Agent.
 2. **Given** a staff member sends "anh Lâm hai trứng lộn một cháo lòng", **When** the Orchestrator processes the message, **Then** the request is classified as an order and forwarded to the Order Agent.
-3. **Given** a staff member sends "xin chào", **When** the Orchestrator processes the message, **Then** the system replies with a polite conversational response without routing to any agent.
-4. **Given** a message that is ambiguous, **When** the Orchestrator cannot classify with sufficient confidence, **Then** it asks the user a single clarifying question rather than routing incorrectly.
+3. **Given** a staff member sends "tìm khách hàng tên Hoa số điện thoại 09xx", **When** the Orchestrator processes the message, **Then** the request is classified as a customer management request and forwarded to the Customer Agent.
+4. **Given** a staff member sends "xin chào", **When** the Orchestrator processes the message, **Then** the system replies with a polite conversational response without routing to any agent.
+5. **Given** a message that is ambiguous, **When** the Orchestrator cannot classify with sufficient confidence, **Then** it asks the user a single clarifying question rather than routing incorrectly.
 
 ---
 
@@ -187,6 +188,24 @@ The Orchestrator dispatches tasks to Domain Agents in parallel when steps have n
 
 ---
 
+### User Story 12 — Customer Management (Priority: P1)
+
+A staff member can look up, create, or update customer records using natural Vietnamese. The Customer Agent handles all customer-lifecycle operations (find by name or phone, create new record, update contact info, view purchase history) as a dedicated specialist — freeing the Order Agent from inline customer lookups.
+
+**Why this priority**: The Order Agent already calls `customer__get_customers` internally, but mixing order-creation logic with customer-management logic violates single responsibility. A dedicated Customer Agent enables direct "tìm khách", "thêm khách", "cập nhật SĐT" requests without coupling them to order flows. It also enables the Orchestrator to route customer-only queries to the correct agent.
+
+**Independent Test**: Submit 10 Customer Agent tasks covering: lookup by name, lookup by phone, create new customer, update phone number, view purchase history. Verify at least 9/10 return correct results and the agent card exposes `lookup_customer`, `create_customer`, `update_customer` skills.
+
+**Acceptance Scenarios**:
+
+1. **Given** a staff member sends "tìm khách hàng anh Lâm", **When** the Orchestrator processes it, **Then** the request is classified as `customer` and forwarded to the Customer Agent with skill `lookup_customer`.
+2. **Given** the Customer Agent receives a `lookup_customer` task, **When** it calls `customer__get_customers` via the Tool Registry, **Then** it returns a list of matching customers with names, phone numbers, and IDs.
+3. **Given** a staff member requests "thêm khách mới tên Hoa SĐT 09xx", **When** the Customer Agent processes `create_customer`, **Then** the HITL gate pauses the loop, presents a Vietnamese confirmation ("Tạo khách hàng mới: Hoa – 09xx"), and only creates the record after explicit staff approval.
+4. **Given** a returning customer "anh Lâm" is looked up a second time, **When** the Customer Agent retrieves `contact_alias` memory, **Then** it resolves "anh Lâm" → stored `customer_id` without calling `customer__get_customers` again.
+5. **Given** `contact_alias` or `customer_profile` memories exist for a customer, **When** the Customer Agent builds its system prompt, **Then** stored aliases and profiles are injected via `build_agent_system_prompt()` so the agent can reference prior lookup patterns.
+
+---
+
 ### User Story 6 — Voice Input (Priority: P2)
 
 A staff member speaks a request instead of typing. The system transcribes the audio and processes it identically to a typed message, routing to the same agents with the same quality.
@@ -223,7 +242,7 @@ A staff member speaks a request instead of typing. The system transcribes the au
 **Orchestrator**
 
 - **FR-001**: The Orchestrator MUST accept user messages via an HTTP text endpoint and return a response.
-- **FR-002**: The Orchestrator MUST classify each message into one of: `order`, `bi_query`, `chitchat`, or `unknown`, with accuracy ≥ 90% on standard test inputs.
+- **FR-002**: The Orchestrator MUST classify each message into one of: `order`, `bi_query`, `customer`, `chitchat`, or `unknown`, with accuracy ≥ 90% on standard test inputs.
 - **FR-003**: The Orchestrator MUST create a serializable execution plan before delegating tasks to Domain Agents — the plan must be observable in structured logs.
 - **FR-004**: The Orchestrator MUST delegate tasks to the appropriate Domain Agent via the A2A protocol, forwarding the caller's Bearer token.
 - **FR-005**: The Orchestrator MUST aggregate Domain Agent responses and return a single coherent reply to the user.
@@ -269,6 +288,12 @@ A staff member speaks a request instead of typing. The system transcribes the au
 - **FR-030**: `MemoryService` MUST be a shared library (`shared/memory_service.py`) usable by both Order Agent and BI Agent without duplication.
 - **FR-031**: When `POSTGRES_DSN` is not configured, memory retrieval and storage MUST be silently skipped — the agent MUST function normally without memory.
 
+**Customer Domain Agent**
+
+- **FR-046**: The Customer Agent MUST expose three A2A skills: `lookup_customer` (find by name or phone via `customer__get_customers`), `create_customer` (create new record via `customer__create_customer`), and `update_customer` (update contact info via `customer__update_customer`).
+- **FR-047**: The Customer Agent MUST implement `MemoryAwareReActLoop` with memory types `contact_alias`, `customer_profile`, and `lookup_pattern`. On lookup completion, a `contact_alias` entry MUST be stored mapping the spoken name/alias → `customer_id`. On subsequent calls with the same alias, the agent MUST resolve `customer_id` from memory without re-calling the Tool Registry.
+- **FR-048**: `customer__create_customer` MUST be a mutating tool (`requires_confirmation: true`) — the HITL gate MUST pause the Customer Agent ReAct loop and present a Vietnamese confirmation message before creating any customer record.
+
 **Task Dispatch & Dependency Engine**
 
 - **FR-043**: The Orchestrator MUST send an `A2ATaskPayload` to Domain Agents that includes four groups: Identity (`task_id`, `plan_id`, `sub_goal_sequence`, `session_id`, `tenant_id`), Intent (`original_message`, `skill`, `instructions` — a per-step goal string generated by the Plan LLM), Conversation context (`conversation_history`: last 6 turns from session), and Dependency results (`dependency_results`: `dict[str, dict]` mapping upstream agent name → result).
@@ -303,7 +328,7 @@ A staff member speaks a request instead of typing. The system transcribes the au
 - **OrderDraft**: An intermediate order held during multi-turn confirmation — customer identity, resolved items (with product IDs and prices), table number, discount, and notes.
 - **OrderEntities**: NLP extraction output from a raw order message — customer name, honorific, table number, and a list of (product query, quantity, note) tuples.
 - **BIQueryResult**: BI Agent output — the generated query, rows returned (up to the limit), row count, and a formatted human-readable summary.
-- **AgentMemory**: A persistent semantic fact stored per agent and tenant — `memory_type` (`product_alias` | `customer_pref` | `order_pattern` | `vn_expression` | `sql_pattern` | `glossary_fix` | `column_alias` | `query_template`), lookup `key`, `content`, `confidence`, `usage_count`. Upserted after each task; updated on retrieval.
+- **AgentMemory**: A persistent semantic fact stored per agent and tenant — `memory_type` (Order Agent: `product_alias` | `customer_pref` | `order_pattern` | `vn_expression`; BI Agent: `sql_pattern` | `glossary_fix` | `column_alias` | `query_template`; Customer Agent: `contact_alias` | `customer_profile` | `lookup_pattern`), lookup `key`, `content`, `confidence`, `usage_count`. Upserted after each task; updated on retrieval.
 - **AgentTaskHistory**: An episodic record of a completed A2A task — `agent_name`, `tenant_id`, `plan_id` (FK → plans), `skill`, `input_summary` (no raw PII), `outcome` (`success` | `failed` | `cancelled`), `key_decisions` (JSONB), `learnings`, `duration_ms`. Used by `find_similar_tasks()` to surface past patterns.
 - **HITLConfirmation**: A transient confirmation state created when a mutating tool is intercepted — `tool_name`, `pending_args`, `confirmation_message` (Vietnamese), `intent` (after user responds: `confirm` | `modify` | `cancel` | `scope_change`). Not persisted; held in ReAct loop context until resolved.
 - **A2ATaskPayload**: The enriched task payload sent from the Orchestrator to a Domain Agent — four groups: (1) Identity: `task_id`, `plan_id`, `sub_goal_sequence`, `session_id`, `tenant_id`; (2) Intent: `original_message`, `skill`, `instructions` (per-step goal from Plan LLM); (3) Conversation: `conversation_history` (last 6 turns); (4) Dependencies: `dependency_results` (`dict[str, dict]` — upstream agent name → its result). The Domain Agent's `build_agent_system_prompt(payload, memory_context)` assembles these groups into the LLM system prompt.
@@ -338,6 +363,7 @@ A staff member speaks a request instead of typing. The system transcribes the au
 - **SC-021**: HITL confirmation message contains tool name, action description, and data impact in Vietnamese in 100% of test runs. Classification latency (GPT-4o-mini) ≤ 500ms added to total task latency.
 - **SC-022**: When an Orchestrator plan has two independent steps (both `depends_on: []`), both A2A tasks are submitted within 200ms of each other (parallel dispatch) in 100% of test runs.
 - **SC-023**: When a plan step has `depends_on` set, the downstream Domain Agent's `A2ATaskPayload.dependency_results` contains the upstream agent's result in 100% of test runs.
+- **SC-024**: Customer Agent processes `lookup_customer`, `create_customer`, and `update_customer` with ≥ 90% success rate on 10 representative test scenarios. On the second lookup of the same alias (e.g., "anh Lâm"), `contact_alias` memory resolves the `customer_id` without calling `customer__get_customers` in 100% of test runs.
 
 ---
 
@@ -357,7 +383,7 @@ A staff member speaks a request instead of typing. The system transcribes the au
 ## Out of Scope (v1)
 
 - Real-time streaming WebSocket chat responses
-- Inventory Agent, Campaign Agent, or any agent beyond Order and BI
+- Inventory Agent, Campaign Agent, or any agent beyond Order, BI, and Customer
 - Tool Registry v2 (database-backed) — v1 YAML config only
 - Monitoring dashboard or alerting
 - Multi-language support beyond Vietnamese input and English error messages

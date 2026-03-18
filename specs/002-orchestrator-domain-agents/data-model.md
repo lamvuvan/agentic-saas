@@ -15,16 +15,16 @@ UserSession ──────── has many ──────── Conversat
                                │            │
                         PlanSubGoal ────────┘ (a2a_task_id FK)
                                             │
-                          ┌─────────────────┴──────────────────┐
-                    (Order Agent)                         (BI Agent)
-                       OrderDraft                       BIQueryResult
-                          │                                      │
-                    OrderEntities                                 │
-                          │                                      │
-                     ProductMatch (1..N)                         │
-                                                                 │
-AgentMemory ─────────────── scoped per (agent_name, tenant_id) ─┘
-AgentTaskHistory ─────────── links to DisplayPlan via plan_id FK
+                  ┌─────────────────────────┴──────────────────────────┐
+            (Order Agent)               (BI Agent)             (Customer Agent)
+               OrderDraft             BIQueryResult          CustomerLookupResult
+                  │                        │                        │
+            OrderEntities                  │                        │
+                  │                        │                        │
+           ProductMatch (1..N)             │                        │
+                                           │                        │
+AgentMemory ────────────────── scoped per (agent_name, tenant_id) ──┘
+AgentTaskHistory ──────────────── links to DisplayPlan via plan_id FK
 
 OrchestratorMemory ─── scoped per tenant_id ─── used by Plan node (routing context)
 ```
@@ -117,7 +117,7 @@ One step within an ExecutionPlan. Generated in a single GPT-4o call by the Plan 
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
 | `step_id` | `str` | required | Step identifier (e.g., "step-1") |
-| `agent` | `"order-agent" | "bi-agent"` | required | Target Domain Agent |
+| `agent` | `"order-agent" | "bi-agent" | "customer-agent"` | required | Target Domain Agent |
 | `skill` | `str` | required | A2A skill identifier (e.g., "create_order") |
 | `params` | `dict[str, Any]` | required | Input parameters for the skill |
 | `depends_on` | `list[str]` | default [] | Agent names (not step_ids) this step must wait for; e.g. `["order-agent"]` |
@@ -335,6 +335,7 @@ A single step within a DisplayPlan. Maps 1-to-1 with an A2A task once dispatched
 |---|---|
 | `order-agent` | `"Tạo & Quản Lý Đơn Hàng"` |
 | `bi-agent` | `"Báo Cáo & Phân Tích"` |
+| `customer-agent` | `"Quản Lý Khách Hàng"` |
 
 **State transitions**:
 ```
@@ -359,6 +360,20 @@ Output of the BI Agent's query pipeline.
 | `formatted_summary` | `str` | required | Human-readable answer |
 | `limit_applied` | `bool` | required | Whether automatic LIMIT was injected |
 | `safety_passed` | `bool` | required | Whether safety check passed |
+
+---
+
+### CustomerLookupResult
+
+Output of the Customer Agent's lookup/create/update pipeline.
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `skill` | `"lookup_customer" | "create_customer" | "update_customer"` | required | Which skill produced this result |
+| `customers` | `list[dict]` | optional | Matching customer records (lookup only); each dict: `{customer_id, name, phone, email}` |
+| `customer_id` | `str | null` | optional | ID of created or updated customer |
+| `action` | `str` | required | Human-readable description of what was done (Vietnamese, e.g., "Tìm thấy 2 khách tên Hoa") |
+| `memory_hit` | `bool` | required | `True` if result was resolved from `contact_alias` memory without Tool Registry call |
 
 ---
 
@@ -407,9 +422,9 @@ Persistent semantic fact accumulated by a Domain Agent over time. Upserted after
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | id | UUID | PK | Auto-generated |
-| agent_name | VARCHAR(100) | ✓ | `"order-agent"` or `"bi-agent"` |
+| agent_name | VARCHAR(100) | ✓ | `"order-agent"`, `"bi-agent"`, or `"customer-agent"` |
 | tenant_id | VARCHAR(128) | ✓ | Tenant scope for multi-tenancy |
-| memory_type | VARCHAR(50) | ✓ | Order: `product_alias` \| `customer_pref` \| `order_pattern` \| `vn_expression`; BI: `sql_pattern` \| `glossary_fix` \| `column_alias` \| `query_template` |
+| memory_type | VARCHAR(50) | ✓ | Order: `product_alias` \| `customer_pref` \| `order_pattern` \| `vn_expression`; BI: `sql_pattern` \| `glossary_fix` \| `column_alias` \| `query_template`; Customer: `contact_alias` \| `customer_profile` \| `lookup_pattern` |
 | key | TEXT | ✓ | Lookup key (alias text, customer_id, query intent, business term) |
 | content | TEXT | ✓ | Fact content (the resolved value, preference, pattern, etc.) |
 | confidence | FLOAT | ✓ | 0.0–1.0; default 0.8; UPSERT takes `GREATEST(existing, new)` |
@@ -431,6 +446,9 @@ Persistent semantic fact accumulated by a Domain Agent over time. Upserted after
 | order-agent | vn_expression | "thêm vào" | "Intent: add_to_existing_order" |
 | bi-agent | sql_pattern | "doanh thu theo ngày" | "SELECT DATE(created_at), SUM(net_revenue) FROM orders GROUP BY 1" |
 | bi-agent | glossary_fix | "doanh thu" | "= cột net_revenue (không phải gross_amount)" |
+| customer-agent | contact_alias | "anh Lâm" | `{"customer_id": "cust_456", "full_name": "Vũ Văn Lâm", "phone": "09xx"}` |
+| customer-agent | customer_profile | "cust_456" | "VIP; mua lần cuối 3 ngày trước; tổng chi tiêu 5.2tr; hay đặt vào buổi chiều" |
+| customer-agent | lookup_pattern | "tenant_default" | "Tìm theo SĐT phổ biến nhất; fallback tìm theo tên nếu SĐT không match" |
 
 ---
 
@@ -443,10 +461,10 @@ Episodic record of a completed A2A task. Used to surface similar past tasks for 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | id | UUID | PK | Auto-generated |
-| agent_name | VARCHAR(100) | ✓ | `"order-agent"` or `"bi-agent"` |
+| agent_name | VARCHAR(100) | ✓ | `"order-agent"`, `"bi-agent"`, or `"customer-agent"` |
 | tenant_id | VARCHAR(128) | ✓ | Tenant scope |
 | plan_id | UUID | FK → plans.id | Links to the Orchestrator plan that triggered this task |
-| skill | VARCHAR(100) | ✓ | `"create_order"` \| `"bi_query"` |
+| skill | VARCHAR(100) | ✓ | `"create_order"` \| `"bi_query"` \| `"lookup_customer"` \| `"create_customer"` \| `"update_customer"` |
 | input_summary | TEXT | ✓ | Sanitised summary of task input — **MUST NOT contain raw PII** (customer names, phone numbers) |
 | outcome | VARCHAR(20) | ✓ | `"success"` \| `"failed"` \| `"cancelled"` |
 | key_decisions | JSONB | | Dict of `{tool_name: arguments}` — the tool calls agent made during task |
@@ -506,7 +524,7 @@ Persistent routing fact accumulated by the Orchestrator at the meta-level. Disti
 | ExecutionPlan | `goal`, `steps.params` | 1 hour TTL; audit logs retained 90 days per Constitution §Data |
 | DisplayPlan | `user_message`, `goal` | PostgreSQL; does not store PII beyond original message — apply 90-day retention per Constitution default |
 | PlanSubGoal | `title`, `result_summary` | PostgreSQL; may contain derived business data (revenue figures) — no direct PII; 90-day retention |
-| AgentMemory | `key`, `content` (may contain customer_id but not raw name) | PostgreSQL permanent; `customer_pref` entries keyed by `customer_id` (opaque ID), not name — no direct PII |
+| AgentMemory | `key`, `content` (may contain customer_id but not raw name) | PostgreSQL permanent; `customer_pref` and `customer_profile` entries keyed by `customer_id` (opaque ID); `contact_alias` key is the spoken alias (not the ID) but content includes `customer_id` — no sensitive PII beyond alias text |
 | AgentTaskHistory | `input_summary` | PostgreSQL permanent; sanitised summary — raw PII MUST NOT be stored; 90-day retention policy applies |
 | OrchestratorMemory | `key`, `content` (routing strategies, never customer data) | PostgreSQL permanent; stores meta-level routing patterns only — no customer PII by design |
 

@@ -128,6 +128,26 @@ python -m evals.runner --suite intent_classification --base-url http://localhost
 
 ---
 
+## Customer Agent Service (002) — port 8004
+
+**Start locally:**
+```bash
+REDIS_URL=redis://localhost:6379/0 TOOL_REGISTRY_URL=http://localhost:8001 uvicorn customer_agent.main:app --port 8004 --reload
+```
+
+**Key files:**
+- [customer_agent/main.py](customer_agent/main.py) — FastAPI app, A2A router, lifespan
+- [customer_agent/a2a_server.py](customer_agent/a2a_server.py) — `POST /a2a/tasks`, `GET /a2a/tasks/{id}`, HITL continuation resume
+- [customer_agent/core/react_loop.py](customer_agent/core/react_loop.py) — `MemoryAwareReActLoop`: contact_alias hit → memory_hit=True, HITL gate on create/update
+- [customer_agent/models.py](customer_agent/models.py) — `CustomerRecord`, `CustomerLookupResult`, `CustomerAgentState`
+- [customer_agent/prompts/customer_agent_v1.md](customer_agent/prompts/customer_agent_v1.md) — system prompt + 6 few-shot examples
+
+**Skills:** `lookup_customer`, `create_customer` (HITL), `update_customer` (HITL)
+**Memory types:** `contact_alias` (alias→customer_id, confidence=0.9), `customer_profile`, `lookup_pattern`
+**HITL key:** `hitl:{task_id}` (1-hour TTL); resumes via POST /a2a/tasks with `params.continuation.task_id`
+
+---
+
 ## Tool Registry Service (001)
 
 **Start locally:**

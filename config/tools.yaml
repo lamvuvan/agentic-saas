@@ -38,6 +38,27 @@ tools:
       body_mapping: { name: name, phone: contactNumber, address: address }
       response_fields: [id, name, code]
 
+  - name: customer__update_customer
+    namespace: customer
+    description: >
+      Update an existing customer's information (phone, address, name).
+      Requires customer_id. Always confirm with the user before calling this tool.
+    requires_confirmation: true
+    impact_template: "Cập nhật SĐT khách {name}: {old_phone} → {phone}."
+    parameters:
+      type: object
+      required: [customer_id]
+      properties:
+        customer_id: { type: string, description: "ID of the customer to update" }
+        name: { type: string }
+        phone: { type: string }
+        address: { type: string }
+    api:
+      method: PUT
+      url: "${API_BASE}/customers/{customer_id}"
+      body_mapping: { name: name, phone: contactNumber, address: address }
+      response_fields: [id, name, code]
+
   # ── ORDER ─────────────────────────────────────────────────────────────────
   - name: order__create_order
     namespace: order

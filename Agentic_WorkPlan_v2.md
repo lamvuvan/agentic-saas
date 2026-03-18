@@ -16,16 +16,17 @@ Code*
 
 **1. Kiến Trúc Tổng Quan**
 
-Hệ thống gồm 4 service độc lập, giao tiếp qua A2A và Tool Registry HTTP
+Hệ thống gồm 5 service độc lập, giao tiếp qua A2A và Tool Registry HTTP
 API, deploy bằng Docker Compose:
 
-  ------------------- ---------- -------------- -------------------------------------------------------------------------------------------------------------------------------------
-  **Service**         **Port**   **Protocol**   **Trách nhiệm**
-  **Orchestrator**    8000       REST / WS      Nhận request, phân loại intent (GPT-4o-mini), lập plan (GPT-4o), giao task cho Domain Agent qua A2A, tổng hợp response
-  **Tool Registry**   8001       HTTP REST      Catalog tool từ YAML config; GET /tools · POST /tools/{name}/execute. Forward Bearer token từ header --- không lưu trữ.
-  **Order Agent**     8002       A2A + HTTP     A2A server nhận task; tự reasoning (ReAct loop GPT-4o-mini); gọi Tool Registry để search product, get/create customer, create order
-  **BI Agent**        8003       A2A + HTTP     A2A server nhận task; tự reasoning NL2SQL (GPT-4o); gọi Tool Registry để execute query PostgreSQL, format kết quả
-  ------------------- ---------- -------------- -------------------------------------------------------------------------------------------------------------------------------------
+  -------------------- ---------- -------------- ----------------------------------------------------------------------------------------------------------------------------------------------
+  **Service**          **Port**   **Protocol**   **Trách nhiệm**
+  **Orchestrator**     8000       REST / WS      Nhận request, phân loại intent (GPT-4o-mini), lập plan (GPT-4o), giao task cho Domain Agent qua A2A, tổng hợp response
+  **Tool Registry**    8001       HTTP REST      Catalog tool từ YAML config; GET /tools · POST /tools/{name}/execute. Forward Bearer token từ header --- không lưu trữ.
+  **Order Agent**      8002       A2A + HTTP     Nhận task tạo/sửa/huỷ đơn; ReAct loop (GPT-4o-mini); gọi Tool Registry namespace order + customer (lookup nội bộ khi cần customer\_id)
+  **BI Agent**         8003       A2A + HTTP     Nhận task báo cáo/phân tích; NL2SQL (GPT-4o); gọi Tool Registry namespace bi để execute query PostgreSQL, format kết quả
+  **Customer Agent**   8004       A2A + HTTP     Nhận task quản lý khách hàng thuần túy (tìm, tạo, cập nhật, xem lịch sử mua); ReAct loop (GPT-4o-mini); gọi Tool Registry namespace customer
+  -------------------- ---------- -------------- ----------------------------------------------------------------------------------------------------------------------------------------------
 
 **1.1 Communication Flow**
 
@@ -123,6 +124,36 @@ mì\"\]
 \"health\": \"http://order-agent:8002/health\"
 
 }
+
+\# Customer Agent card (port 8004)
+
+\# {
+
+\# \"name\": \"Customer Agent\",
+
+\# \"version\": \"1.0.0\",
+
+\# \"description\": \"Quản lý khách hàng: tìm kiếm, tạo mới, cập nhật
+thông tin, xem lịch sử mua.\",
+
+\# \"skills\": \[
+
+\# {\"id\": \"lookup\_customer\", \"name\": \"Tìm khách hàng\",
+\"examples\": \[\"anh Lâm café\", \"SĐT 09xx\"\]},
+
+\# {\"id\": \"create\_customer\", \"name\": \"Tạo khách hàng\",
+\"examples\": \[\"thêm khách mới tên Hoa SĐT 09xx\"\]},
+
+\# {\"id\": \"update\_customer\", \"name\": \"Cập nhật khách\",
+\"examples\": \[\"đổi SĐT anh Lâm thành 09yy\"\]}
+
+\# \],
+
+\# \"a2a\_endpoint\": \"http://customer-agent:8004/a2a/tasks\",
+
+\# \"health\": \"http://customer-agent:8004/health\"
+
+\# }
 
 **AgentRegistry trong Orchestrator --- tự fetch & hot-reload**
 
@@ -244,7 +275,7 @@ task\_type=\"plan\")
 \# Khi thêm Inventory Agent mới --- chỉ cần:
 
 \#
-AGENT\_SEED\_URLS=http://order-agent:8002,http://bi-agent:8003,http://inventory-agent:8004
+AGENT\_SEED\_URLS=http://order-agent:8002,http://bi-agent:8003,http://customer-agent:8004
 
 \# Orchestrator tự discover trong lần refresh tiếp theo (≤ 60s), không
 cần restart.
@@ -345,15 +376,16 @@ biết kỹ thuật
 \- sub\_goals\[\].title: mô tả từng bước bằng ngôn ngữ nghiệp vụ (KHÔNG
 dùng tên agent/tool)
 
-\- sub\_goals\[\].agent\_name: tên nội bộ của agent (order-agent \|
-bi-agent) --- dùng cho routing
+\- sub\_goals\[\].agent\_name: tên nội bộ của agent
+(order-agent\|bi-agent\|customer-agent) --- dùng cho routing
 
 \- sub\_goals\[\].agent\_label: nhãn hiển thị thân thiện cho người dùng
 (xem bảng mapping bên dưới)
 
 \#\# Layer 2 --- routing (cho hệ thống dùng)
 
-\- steps\[\].agent: tên agent nội bộ (order-agent \| bi-agent)
+\- steps\[\].agent: tên agent nội bộ (order-agent \| bi-agent \|
+customer-agent)
 
 \- steps\[\].skill: skill id lấy từ agent card
 
@@ -364,6 +396,8 @@ Agent label mapping (LUÔN dùng nhãn này trong display):
 order-agent → \"Tạo & Quản Lý Đơn Hàng\"
 
 bi-agent → \"Báo Cáo & Phân Tích\"
+
+customer-agent → \"Quản Lý Khách Hàng\"
 
 Ví dụ input: \"cho tôi xem doanh thu hôm nay và tạo đơn cho anh Lâm cafe
 đen\"
@@ -628,7 +662,8 @@ CREATE TABLE agent\_memory (
 
 id UUID PRIMARY KEY DEFAULT gen\_random\_uuid(),
 
-agent\_name VARCHAR(100) NOT NULL, \-- \"order-agent\" \| \"bi-agent\"
+agent\_name VARCHAR(100) NOT NULL, \--
+\"order-agent\"\|\"bi-agent\"\|\"customer-agent\"
 
 tenant\_id VARCHAR(128) NOT NULL,
 
@@ -639,6 +674,9 @@ memory\_type VARCHAR(50) NOT NULL,
 
 \-- bi-agent: \"sql\_pattern\" \|\"glossary\_fix\" \|\"column\_alias\"
 \|\"query\_template\"
+
+\-- customer-agent:
+\"contact\_alias\"\|\"customer\_profile\"\|\"lookup\_pattern\"
 
 key TEXT NOT NULL, \-- lookup key (customer\_id, product\_name, \...)
 
@@ -948,6 +986,17 @@ query\_intent)
 \- glossary\_fix: \"doanh thu\" trong context này = cột net\_revenue
 (key: business\_term)
 
+customer-agent:
+
+\- contact\_alias: \"anh Lâm\" → customer\_id cụ thể, tên đầy đủ, SĐT
+(key: alias\_text)
+
+\- customer\_profile: lịch sử mua, tần suất, segment VIP/regular (key:
+customer\_id)
+
+\- lookup\_pattern: pattern tìm kiếm phổ biến nhất của tenant này (key:
+tenant\_id)
+
 Nếu không có fact nào đáng lưu → trả về \[\].
 
 \"\"\"
@@ -1040,16 +1089,19 @@ return \"\\n\".join(blocks)
 
 **Ví Dụ Memory Theo Từng Agent**
 
-  ----------- ------------------ ------------------------- ------------------------------------------------------------------------
-  **Agent**   **memory\_type**   **key**                   **content (ví dụ)**
-  **Order**   product\_alias     \"ba đen\"                \"cafe đen đá size L (confidence: 0.95, xuất hiện 12 lần)\"
-  **Order**   customer\_pref     \"cust\_123\" (Lâm)       \"Thường order trứng lộn x2 vào buổi sáng, không đường\"
-  **Order**   vn\_expression     \"thêm vào\"              \"Intent: add\_to\_existing\_order, KHÔNG phải create\_new\"
-  **Order**   order\_pattern     \"bàn 3 shift sáng\"      \"Thường gọi set sáng: cháo trắng + trứng ốp la\"
-  **BI**      sql\_pattern       \"doanh thu theo ngày\"   \"SELECT DATE(created\_at), SUM(net\_revenue) FROM orders GROUP BY 1\"
-  **BI**      glossary\_fix      \"doanh thu\"             \"= cột net\_revenue (không phải gross\_amount) trong bảng orders\"
-  **BI**      column\_alias      \"khách mới\"             \"WHERE created\_at \>= CURRENT\_DATE - INTERVAL \'30 days\'\"
-  ----------- ------------------ ------------------------- ------------------------------------------------------------------------
+  -------------- ------------------- ------------------------- ---------------------------------------------------------------------------------------
+  **Agent**      **memory\_type**    **key**                   **content (ví dụ)**
+  **Order**      product\_alias      \"ba đen\"                \"cafe đen đá size L (confidence: 0.95, xuất hiện 12 lần)\"
+  **Order**      customer\_pref      \"cust\_123\" (Lâm)       \"Thường order trứng lộn x2 vào buổi sáng, không đường\"
+  **Order**      vn\_expression      \"thêm vào\"              \"Intent: add\_to\_existing\_order, KHÔNG phải create\_new\"
+  **Order**      order\_pattern      \"bàn 3 shift sáng\"      \"Thường gọi set sáng: cháo trắng + trứng ốp la\"
+  **BI**         sql\_pattern        \"doanh thu theo ngày\"   \"SELECT DATE(created\_at), SUM(net\_revenue) FROM orders GROUP BY 1\"
+  **BI**         glossary\_fix       \"doanh thu\"             \"= cột net\_revenue (không phải gross\_amount) trong bảng orders\"
+  **BI**         column\_alias       \"khách mới\"             \"WHERE created\_at \>= CURRENT\_DATE - INTERVAL \'30 days\'\"
+  **Customer**   contact\_alias      \"anh Lâm\"               \"customer\_id: cust\_456, tên đầy đủ: Vũ Văn Lâm, SĐT: 09xx\"
+  **Customer**   customer\_profile   \"cust\_456\"             \"VIP, mua lần cuối 3 ngày trước, tổng chi tiêu 5.2tr, hay đặt vào buổi chiều\"
+  **Customer**   lookup\_pattern     \"tìm bằng SĐT\"          \"Đây là pattern tìm kiếm phổ biến nhất; fallback: tìm theo tên nếu SĐT không match\"
+  -------------- ------------------- ------------------------- ---------------------------------------------------------------------------------------
 
 **1.6 Orchestrator Memory --- Học Ở Tầng Meta**
 
@@ -2080,34 +2132,34 @@ xong.
 
 **3.1 Task Breakdown**
 
-  ---------- --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- ----------------------------------------------------------------------------------------------------------------------------- -------------
-  **Ngày**   **Công việc**                                                                                                                                                                                                               **Owner**   **Deliverable**                                                                                                               **Ưu tiên**
-  **1**      Khởi tạo monorepo: pyproject.toml, shared/ lib (auth\_context, llm\_client, models), Makefile, .env.example, pre-commit hooks                                                                                               TL          *Repo clone được, \`make dev\` chạy*                                                                                          **P0**
-  **1**      Docker Compose 4 services: orchestrator:8000, tool-registry:8001, order-agent:8002, bi-agent:8003 --- mỗi service /health endpoint                                                                                          SE          *\`docker compose up\` --- 4 services healthy*                                                                                **P0**
-  **2**      shared/llm.py: OpenAI async wrapper, select\_model(task\_type) từ config, structured output (response\_format=json\_object), retry logic                                                                                    AI          *llm.py unit test: intent/entity task types*                                                                                  **P0**
-  **2**      shared/auth\_context.py + AuthForwardMiddleware --- copy vào tất cả services; unit test: token set/get trong async context                                                                                                  SE          *Auth forward test pass 100%*                                                                                                 **P0**
-  **3**      Tool Registry: config\_loader.py đọc tools.yaml → build ToolDefinition + dynamic handler; GET /tools; POST /tools/{name}/execute                                                                                            SE          *3 tools load đúng; curl test get\_customers OK*                                                                              **P0**
-  **3**      Tool Registry: HTTP adapter dùng auth\_context.\_auth\_headers(); timeout=10s; retry=2; error mapping tiếng Việt                                                                                                   SE          *Adapter test với mock server*                                                                                                **P0**
-  **4**      ToolRegistryClient (shared): get\_openai\_tools(namespace) convert sang OpenAI function format; execute(name, params) forward token qua header                                                                              AI          *Client test: tools load + execute mock tool*                                                                                 **P0**
-  **4**      Orchestrator LangGraph: OrchestratorState TypedDict, graph compile với nodes stub, Redis checkpointer, session manager                                                                                                      AI          *Graph compile; state persist qua Redis*                                                                                      **P0**
-  **4**      DB setup: Alembic init, migration 001\_plans.sql (bảng plans + plan\_sub\_goals đầy đủ cột incl. a2a\_task\_id); asyncpg pool; alembic upgrade head chạy tự động khi Docker Compose start                                   SE          *\`docker compose up\` → migration tự chạy; PlanService unit test: create\_plan/link\_task/sync\_from\_task/get\_plan pass*   **P0**
-  **5**      Intent Classifier node: GPT-4o-mini, system prompt + 8 few-shot (order/bi/chitchat), structured output JSON, test 20 câu tiếng Việt                                                                                         AI          *Accuracy ≥ 90% trên 20 test cases*                                                                                           **P0**
-  **5**      A2A Server skeleton cho Order Agent và BI Agent: POST /a2a/tasks, GET /a2a/tasks/{id}, GET /.well-known/agent.json (Agent Card); task status: submitted→working→completed                                                   SE          *Postman test A2A flow; agent card trả đúng JSON*                                                                             **P0**
-  **6**      AgentRegistry (Orchestrator): fetch /.well-known/agent.json từ seed URLs khi startup, background refresh mỗi 60s, health tracking, build\_prompt\_context()                                                                 AI          *AgentRegistry test: thêm agent mới → tự xuất hiện trong prompt context sau ≤ 60s*                                            **P0**
-  **6**      Orchestrator A2A Client: send\_task\_a2a(agent, skill, params) → submit → poll → return; forward auth header; timeout 30s                                                                                                   AI          *A2A Client test với stub Domain Agent*                                                                                       **P0**
-  **6**      DB migration 003\_orchestrator\_memory.sql: bảng orchestrator\_memory; OrchestratorMemoryService (retrieve\_patterns/store\_pattern/find\_similar\_plans/extract\_and\_store)                                               SE          *Migration chạy; OrchestratorMemoryService unit test pass*                                                                    **P1**
-  **6**      Plan node (GPT-4o): dual-layer output {display, routing{steps\[{sequence,agent,skill,depends\_on,instructions}\]}}; instructions đủ context cho agent tự xử lý; inject AgentRegistry + OrchestratorMemoryService            AI          *Plan sinh đúng depends\_on; instructions rõ scope; test 3 cases: parallel/sequential/single*                                 **P1**
-  **6**      DispatchEngine: dependency graph resolver, asyncio.gather cho parallel steps, inject dependency\_results vào downstream payload, A2ATaskPayload model đầy đủ (original\_message/instructions/history/dependency\_results)   SE          *Test: 2 task parallel chạy đúng; 1 task sequential nhận đúng upstream result*                                                **P0**
-  **6**      Plan persistence + learning: PlanService.create\_plan() → link\_task() → sync\_from\_task(); khi plan completed → OrchestratorMemoryService.extract\_and\_store(); GET /plans/{session\_id}/current                         SE          *API plan realtime; memory tích lũy sau mỗi completed plan*                                                                   **P1**
-  **7**      E2E integration test: 5 order + 3 bi + 2 chitchat → Orchestrator → A2A → Domain stub → Tool Registry mock → response; tất cả pass                                                                                           All         *pytest e2e pass; demo video 3 phút*                                                                                          **P0**
-  **7**      Logging middleware: request\_id, session\_id, intent, model, latency\_ms, tokens --- JSON structured log mọi service                                                                                                        SE          *Log đầy đủ cho mọi request*                                                                                                  **P1**
-  ---------- --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- ----------------------------------------------------------------------------------------------------------------------------- -------------
+  ---------- ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- ----------------------------------------------------------------------------------------------------------------------------- -------------
+  **Ngày**   **Công việc**                                                                                                                                                                                                                                                     **Owner**   **Deliverable**                                                                                                               **Ưu tiên**
+  **1**      Khởi tạo monorepo: pyproject.toml, shared/ lib (auth\_context, llm\_client, models), Makefile, .env.example, pre-commit hooks                                                                                                                                     TL          *Repo clone được, \`make dev\` chạy*                                                                                          **P0**
+  **1**      Docker Compose 5 services: orchestrator:8000, tool-registry:8001, order-agent:8002, bi-agent:8003, customer-agent:8004 --- mỗi service /health endpoint                                                                                                           SE          *\`docker compose up\` --- 5 services healthy*                                                                                **P0**
+  **2**      shared/llm.py: OpenAI async wrapper, select\_model(task\_type) từ config, structured output (response\_format=json\_object), retry logic                                                                                                                          AI          *llm.py unit test: intent/entity task types*                                                                                  **P0**
+  **2**      shared/auth\_context.py + AuthForwardMiddleware --- copy vào tất cả services; unit test: token set/get trong async context                                                                                                                                        SE          *Auth forward test pass 100%*                                                                                                 **P0**
+  **3**      Tool Registry: config\_loader.py đọc tools.yaml → build ToolDefinition + dynamic handler; GET /tools; POST /tools/{name}/execute                                                                                                                                  SE          *3 tools load đúng; curl test get\_customers OK*                                                                              **P0**
+  **3**      Tool Registry: HTTP adapter dùng auth\_context.\_auth\_headers(); timeout=10s; retry=2; error mapping tiếng Việt                                                                                                                                         SE          *Adapter test với mock server*                                                                                                **P0**
+  **4**      ToolRegistryClient (shared): get\_openai\_tools(namespace) convert sang OpenAI function format; execute(name, params) forward token qua header                                                                                                                    AI          *Client test: tools load + execute mock tool*                                                                                 **P0**
+  **4**      Orchestrator LangGraph: OrchestratorState TypedDict, graph compile với nodes stub, Redis checkpointer, session manager                                                                                                                                            AI          *Graph compile; state persist qua Redis*                                                                                      **P0**
+  **4**      DB setup: Alembic init, migration 001\_plans.sql (bảng plans + plan\_sub\_goals đầy đủ cột incl. a2a\_task\_id); asyncpg pool; alembic upgrade head chạy tự động khi Docker Compose start                                                                         SE          *\`docker compose up\` → migration tự chạy; PlanService unit test: create\_plan/link\_task/sync\_from\_task/get\_plan pass*   **P0**
+  **5**      Intent Classifier node: GPT-4o-mini, system prompt + 8 few-shot (order/bi/chitchat), structured output JSON, test 20 câu tiếng Việt                                                                                                                               AI          *Accuracy ≥ 90% trên 20 test cases*                                                                                           **P0**
+  **5**      A2A Server skeleton cho Order Agent, BI Agent và Customer Agent (3 services): POST /a2a/tasks, GET /a2a/tasks/{id}, GET /.well-known/agent.json (Agent Card); task status: submitted→working→completed; shared base class AbstractA2AAgent tránh trùng lặp code   SE          *Postman test A2A flow trên cả 3 agents; agent card trả đúng JSON*                                                            **P0**
+  **6**      AgentRegistry (Orchestrator): fetch /.well-known/agent.json từ seed URLs khi startup, background refresh mỗi 60s, health tracking, build\_prompt\_context()                                                                                                       AI          *AgentRegistry test: thêm agent mới → tự xuất hiện trong prompt context sau ≤ 60s*                                            **P0**
+  **6**      Orchestrator A2A Client: send\_task\_a2a(agent, skill, params) → submit → poll → return; forward auth header; timeout 30s                                                                                                                                         AI          *A2A Client test với stub Domain Agent*                                                                                       **P0**
+  **6**      DB migration 003\_orchestrator\_memory.sql: bảng orchestrator\_memory; OrchestratorMemoryService (retrieve\_patterns/store\_pattern/find\_similar\_plans/extract\_and\_store)                                                                                     SE          *Migration chạy; OrchestratorMemoryService unit test pass*                                                                    **P1**
+  **6**      Plan node (GPT-4o): dual-layer output {display, routing{steps\[{sequence,agent,skill,depends\_on,instructions}\]}}; instructions đủ context cho agent tự xử lý; inject AgentRegistry + OrchestratorMemoryService                                                  AI          *Plan sinh đúng depends\_on; instructions rõ scope; test 3 cases: parallel/sequential/single*                                 **P1**
+  **6**      DispatchEngine: dependency graph resolver, asyncio.gather cho parallel steps, inject dependency\_results vào downstream payload, A2ATaskPayload model đầy đủ (original\_message/instructions/history/dependency\_results)                                         SE          *Test: 2 task parallel chạy đúng; 1 task sequential nhận đúng upstream result*                                                **P0**
+  **6**      Plan persistence + learning: PlanService.create\_plan() → link\_task() → sync\_from\_task(); khi plan completed → OrchestratorMemoryService.extract\_and\_store(); GET /plans/{session\_id}/current                                                               SE          *API plan realtime; memory tích lũy sau mỗi completed plan*                                                                   **P1**
+  **7**      E2E integration test: 5 order + 3 bi + 2 chitchat → Orchestrator → A2A → Domain stub → Tool Registry mock → response; tất cả pass                                                                                                                                 All         *pytest e2e pass; demo video 3 phút*                                                                                          **P0**
+  **7**      Logging middleware: request\_id, session\_id, intent, model, latency\_ms, tokens --- JSON structured log mọi service                                                                                                                                              SE          *Log đầy đủ cho mọi request*                                                                                                  **P1**
+  ---------- ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- ----------------------------------------------------------------------------------------------------------------------------- -------------
 
-**4. Sprint 2 --- Core Agents: Order & BI (Ngày 8--14)**
+**4. Sprint 2 --- Core Agents: Order, BI & Customer (Ngày 8--14)**
 
-  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-  **Mục tiêu:** Order Agent xử lý đúng câu tiếng Việt tự nhiên ≥ 90% → tạo đơn thành công. BI Agent trả lời đúng ≥ 80% trên 15 query doanh số/khách hàng/công nợ. Demo cuối sprint: live demo với dữ liệu thực.
-  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **Mục tiêu:** Order Agent xử lý đúng câu tiếng Việt tự nhiên ≥ 90% → tạo đơn thành công. BI Agent trả lời đúng ≥ 80% trên 15 query doanh số/khách hàng/công nợ. Customer Agent xử lý đúng ≥ 90% các thao tác tìm/tạo/cập nhật khách hàng. Demo cuối sprint: live demo với dữ liệu thực.
+  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 **4.1 Order Agent --- Thiết kế Reasoning Pipeline**
 
@@ -2147,7 +2199,9 @@ xong.
   **13**     BI query executor: asyncpg SELECT-only safety check, LIMIT inject, timeout 10s, error handling; result formatter (text/table/summary)                                                                                                                 SE          *10 queries execute đúng, safety block 5 bad SQL*                                                   **P0**
   **13**     BI Agent A2A server: xử lý skill \"bi\_query\"; integrate NL2SQL + executor; test 20 BI queries (doanh thu, khách hàng, công nợ, tồn kho)                                                                                                             AI          *Pass ≥ 80% trên 20 BI queries*                                                                     **P0**
   **13**     MemoryAwareReActLoop cho BI Agent: tích hợp MemoryService --- retrieve sql\_pattern/glossary\_fix trước NL2SQL; store SQL pattern đúng sau mỗi query thành công; test memory reuse trên repeated queries                                              AI          *Query lần 2 nhanh hơn và đúng hơn lần 1 nhờ memory*                                                **P1**
-  **14**     Sprint 2 demo: live demo 5 kịch bản thực tế (order chat x2, BI doanh thu, BI khách hàng, BI công nợ) --- record video                                                                                                                                 All         *Demo video 5 phút, pass ≥ 85% scenarios*                                                           **P0**
+  **13**     Customer Agent A2A server: xử lý 3 skills (lookup\_customer, create\_customer, update\_customer); ReAct loop (GPT-4o-mini) gọi Tool Registry namespace customer; Agent Card endpoint; test 10 kịch bản (tìm khách, tạo mới, xem lịch sử mua)          SE          *A2A E2E: nhận task → lookup/create/update khách thành công; agent card đúng*                       **P0**
+  **13**     MemoryAwareReActLoop cho Customer Agent: retrieve contact\_alias/customer\_profile trước khi lookup (ví dụ: \"anh Lâm\" → customer\_id đã lưu); store profile sau mỗi lần tìm thành công; test alias recall                                           AI          *Test: \"anh Lâm\" lần 2 → resolve đúng customer\_id từ memory mà không cần search lại*             **P1**
+  **14**     Sprint 2 demo: live demo 6 kịch bản thực tế (order chat x2, BI doanh thu, BI khách hàng, BI công nợ, Customer lookup + tạo mới) --- record video                                                                                                      All         *Demo video 5 phút, pass ≥ 85% scenarios*                                                           **P0**
   ---------- ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- --------------------------------------------------------------------------------------------------- -------------
 
 **4.3 Order Agent System Prompt --- Key Structure**
@@ -2469,7 +2523,7 @@ indent=2))
   **20**     Demo UI: HTML/JS đơn giản --- text input + conversation history + order preview card; không cần framework                                              SE          *Demo UI chạy được trên localhost*        **P1**
   **20**     Documentation: README setup, API docs, prompt engineering decisions, tool\_config guide, eval guide                                                    TL          *README đầy đủ*                           **P2**
   **21**     Final eval run: toàn bộ 60+ test cases; target pass rate E2E ≥ 85%. Ghi nhận kết quả vào reports/sprint3\_final.json                                   All         *Pass rate report chính thức*             **P0**
-  **21**     Demo chuẩn bị: 5 kịch bản thực tế (order chat x2, BI doanh thu, BI khách hàng, BI công nợ), rehearsal, record video                                    All         *Demo video 7 phút + slide 5 trang*       **P0**
+  **21**     Demo chuẩn bị: 6 kịch bản thực tế (order chat x2, BI doanh thu, BI khách hàng, BI công nợ, Customer lookup + tạo mới), rehearsal, record video         All         *Demo video 7 phút + slide 5 trang*       **P0**
   ---------- ------------------------------------------------------------------------------------------------------------------------------------------------------ ----------- ----------------------------------------- -------------
 
 **6. Claude Code --- Workflow Tích Hợp**

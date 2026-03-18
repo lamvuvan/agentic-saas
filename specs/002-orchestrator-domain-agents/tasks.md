@@ -306,6 +306,32 @@
 
 ---
 
+## Phase 8e: User Story 12 — Customer Agent (Priority: P1)
+
+**Goal**: A dedicated `customer_agent` service (port 8004) handles all customer lifecycle operations via three A2A skills: `lookup_customer`, `create_customer`, `update_customer`. The Customer Agent uses `MemoryAwareReActLoop` with `contact_alias`/`customer_profile`/`lookup_pattern` memory types — on the second lookup of "anh Lâm" it resolves the `customer_id` directly from memory without calling the Tool Registry. `create_customer` and `update_customer` are guarded by the HITL gate (`requires_confirmation: true`). The Orchestrator discovers the Customer Agent via AgentRegistry (`AGENT_SEED_URLS`).
+
+**Independent Test**: Submit a Customer Agent A2A task with skill `lookup_customer` — verify the task transitions `submitted → working → completed` and returns a customer list. Submit the same name lookup twice — verify the second call sets `memory_hit=True` in the result (resolved from `contact_alias` memory). Submit `create_customer` task — verify the A2A task transitions to `input_required` (HITL gate) before any record is created.
+
+### Tests (write first — must FAIL before implementation)
+
+- [X] T128 [P] [US12] Write contract tests for Customer Agent in tests/002-orchestrator-domain-agents/contract/test_customer_agent_contract.py: POST /a2a/tasks 202 returns task_id+status, GET /a2a/tasks/{id} returns status enum, GET /.well-known/agent.json returns agent card with name="Customer Agent" and skills=[lookup_customer, create_customer, update_customer], token not echoed in any response field
+- [X] T129 [P] [US12] Write integration tests for Customer Agent in tests/002-orchestrator-domain-agents/integration/test_customer_agent.py: lookup_customer by name returns matching records, create_customer transitions to input_required (HITL pause before Tool Registry call), alias memory recall (2nd lookup for same alias resolves from contact_alias memory: result.memory_hit=True, customer__get_customers not called second time)
+
+### Implementation
+
+- [X] T130 [P] [US12] Create customer_agent/models.py: CustomerRecord (customer_id: str, name: str, phone: str | None, email: str | None), CustomerLookupResult (skill: str, customers: list[CustomerRecord], customer_id: str | None, action: str, memory_hit: bool), CustomerAgentState (TypedDict with messages: list, skill: str, payload: dict | None, result: dict | None)
+- [X] T131 [P] [US12] Create customer_agent/prompts/customer_agent_v1.md: Customer Agent system prompt (role: quản lý khách hàng, tool namespace: customer) + 6 few-shot ReAct examples — lookup by name, lookup by phone, create_customer (HITL pause), update_customer (HITL pause), alias recall from memory, view purchase history
+- [X] T132 [P] [US12] Update config/tools.yaml: add customer__update_customer tool (HTTP PUT /customers/{id}, namespace: customer, requires_confirmation: true, impact_template: "Cập nhật SĐT khách {name}: {old_phone} → {new_phone}."); add requires_confirmation: true + impact_template: "Tạo khách hàng mới: {name} ({phone}). Dữ liệu sẽ được lưu vào hệ thống." to existing customer__create_customer entry
+- [X] T133 [US12] Create customer_agent/core/react_loop.py: MemoryAwareReActLoop (Customer Agent variant) with build_agent_system_prompt(payload, memory_context) following same pattern as order_agent/bi_agent; retrieve contact_alias/customer_profile/lookup_pattern memories before loop via MemoryService; HITL gate on create_customer and update_customer (requires_confirmation: true); on successful lookup store contact_alias entry mapping alias text → {customer_id, full_name, phone} with confidence=0.9; _extract_learnings (best-effort, GPT-4o-mini) extracts contact_alias/customer_profile/lookup_pattern facts; graceful degradation when POSTGRES_DSN not set (memory=None)
+- [X] T134 [US12] Create customer_agent/a2a_server.py: POST /a2a/tasks (202) for skills lookup_customer/create_customer/update_customer; background _process_customer_task() using MemoryAwareReActLoop; A2ATaskPayload.model_validate(task.params) with ValidationError fallback to payload=None; HITL continuation via resume_after_hitl() matching order_agent/a2a_server.py pattern; GET /a2a/tasks/{id} status + result polling
+- [X] T135 [US12] Create customer_agent/main.py: FastAPI app with A2A router mount, GET /.well-known/agent.json returning AgentCard (name="Customer Agent", version="1.0.0", description="Quản lý khách hàng: tìm kiếm, tạo mới, cập nhật thông tin, xem lịch sử mua.", skills=[lookup_customer, create_customer, update_customer], a2a_endpoint="http://customer-agent:8004/a2a/tasks"), GET /health, lifespan (asyncpg pool + MemoryService init, Redis init)
+- [X] T136 [US12] Update docker-compose.yml: add customer-agent service (build: ./customer_agent, port 8004:8004, env REDIS_URL/TOOL_REGISTRY_URL/POSTGRES_DSN/AGENT_SEED_URLS/OPENAI_API_KEY, health check GET /health); update orchestrator service AGENT_SEED_URLS to include http://customer-agent:8004; update .env.example: add CUSTOMER_AGENT_URL=http://localhost:8004
+- [X] T137 [P] [US12] Update orchestrator/prompts/intent_classify_v1.md: add "customer" intent class with 4 few-shot examples (tìm khách, thêm khách mới, cập nhật SĐT, xem lịch sử mua); update orchestrator/prompts/plan_v1.md: add customer-agent row to agent_label mapping table (customer-agent → "Quản Lý Khách Hàng") and add a few-shot example routing step with skill=lookup_customer; update CLAUDE.md between managed markers with Customer Agent (port 8004) service entry
+
+**Checkpoint**: Customer Agent functional — all three skills (lookup/create/update) complete via A2A; HITL gate pauses create/update before Tool Registry mutation; `contact_alias` memory stored after lookup and resolved on second call (memory_hit=True); AgentRegistry discovers customer-agent within 60s (SC-024)
+
+---
+
 ## Phase 8: Polish & Cross-Cutting Concerns
 
 **Purpose**: Eval harness, observability, CLAUDE.md, security audit
@@ -336,6 +362,7 @@
 - **Phase 8b (US9 — Orchestrator Memory)**: Depends on Phase 4b (plans table must exist for find_similar_plans); depends on Phase 4 (plan.py, main.py to extend); can run in parallel with Phase 7b
 - **Phase 8c (US10 — HITL)**: Depends on Phase 7b (MemoryAwareReActLoop in order_agent/core/react_loop.py and bi_agent/core/react_loop.py must exist to add _execute_tool gate); can run in parallel with Phase 8b (different files)
 - **Phase 8d (US11 — Dispatch Engine)**: Depends on Phase 4b (PlanService, A2A dispatch loop exist); depends on Phase 8c (MemoryAwareReActLoop.run() signature must exist before adding payload param); T120 (models) can run in parallel with 8c; T124–T127 run after 8c MemoryAwareReActLoop is in place
+- **Phase 8e (US12 — Customer Agent)**: Depends on Phase 7b (MemoryService shared lib + MemoryAwareReActLoop pattern established); depends on Phase 8c (HITL gate pattern from react_loop.py to reuse); T130–T132 (models, prompt, tools.yaml) can run in parallel with 8d; T133 (react_loop) depends on T130–T132; T134–T135 (a2a_server, main.py) run after T133; T136–T137 (docker-compose, prompts update) run after T135
 - **Phase 8 (Polish)**: Depends on all previous phases
 
 ### User Story Dependencies
@@ -349,6 +376,9 @@
 - **US8 (Domain Agent Memory) → US10 (HITL)**: MemoryAwareReActLoop in react_loop.py must exist before adding _execute_tool HITL gate and resume_after_hitl()
 - **US10 (HITL) → US11 (Dispatch Engine)**: MemoryAwareReActLoop.run() must be stable before adding payload param and build_agent_system_prompt(); A2A dispatch loop must exist before replacing with DispatchEngine
 - **US7 (Plan Visibility) → US11 (Dispatch Engine)**: DispatchEngine.execute() takes plan_service param and calls link_task/sync_from_task internally
+- **US8 (Domain Agent Memory) → US12 (Customer Agent)**: MemoryService shared lib and MemoryAwareReActLoop pattern (order/bi variants) must exist before building Customer Agent variant; contact_alias/customer_profile types reuse same agent_memory table (migration 002)
+- **US10 (HITL) → US12 (Customer Agent)**: HITL gate pattern (_execute_tool, _generate_confirm_message, resume_after_hitl) established in order/bi react_loop.py is copied to Customer Agent — US10 must be stable first
+- **US5 (A2A) → US12 (Customer Agent)**: Customer Agent is a new Domain Agent using the same A2A skeleton established in US5
 
 ### Within Each Phase
 
@@ -449,6 +479,20 @@ Parallel with T123: T124 (order react_loop) + T125 (bi react_loop)
   After T125: T127 (bi a2a_server)
 ```
 
+### Phase 8e (US12) — Parallel scaffold before sequential react_loop + server wiring
+
+```
+Parallel: T128 (contract tests), T129 (integration tests), T130 (models), T131 (prompt), T132 (tools.yaml)
+
+Sequential (after T128–T129 written, T130–T132 done):
+  T133 (react_loop) → T134 (a2a_server) → T135 (main.py)
+
+Sequential (after T135 done):
+  T136 (docker-compose + env)
+
+Parallel with T136: T137 (intent_classify prompt + plan_v1.md + CLAUDE.md)
+```
+
 ---
 
 ## Implementation Strategy
@@ -475,6 +519,7 @@ Parallel with T123: T124 (order react_loop) + T125 (bi react_loop)
 9. US9 → Orchestrator Memory → Orchestrator learns routing strategies at meta-level (depends on US7 for plans table, US1 for plan.py/main.py)
 10. US10 → HITL → Every mutating tool requires explicit user confirmation before execution (depends on US8 for MemoryAwareReActLoop structure)
 11. US11 → Dispatch Engine → Parallel + sequential dispatch with A2ATaskPayload context injection (depends on US10 for stable MemoryAwareReActLoop, US7 for PlanService)
+12. US12 → Customer Agent → Dedicated customer lifecycle service; alias memory recall; HITL on create/update (depends on US8 for MemoryService + MemoryAwareReActLoop pattern, US10 for HITL gate, US5 for A2A skeleton)
 
 ### Parallel Team Strategy
 
@@ -504,9 +549,10 @@ All three stories are independently testable once the A2A backbone exists.
 | Phase 8b | Orchestrator Memory | T099–T107 | US9 |
 | Phase 8c | HITL Confirmation | T108–T117 | US10 |
 | Phase 8d | Dispatch Engine + A2ATaskPayload | T118–T127 | US11 |
+| Phase 8e | Customer Agent | T128–T137 | US12 |
 | Phase 8 | Polish | T067–T073 | — |
 
-**Total**: 125 tasks across 13 phases (T074–T078: AgentRegistry; T079–T088: Plan Visibility / US7; T089–T098: Domain Agent Memory / US8; T099–T107: Orchestrator Memory / US9; T108–T117: HITL / US10; T118–T127: Dispatch Engine + A2ATaskPayload / US11)
+**Total**: 135 tasks across 14 phases (T074–T078: AgentRegistry; T079–T088: Plan Visibility / US7; T089–T098: Domain Agent Memory / US8; T099–T107: Orchestrator Memory / US9; T108–T117: HITL / US10; T118–T127: Dispatch Engine + A2ATaskPayload / US11; T128–T137: Customer Agent / US12)
 
 ---
 
@@ -533,4 +579,9 @@ All three stories are independently testable once the A2A backbone exists.
 - conversation_history in payload (T121): populated from `session.get_last_n_turns(6)` — each turn is `{"role": "user"|"assistant", "content": str}`; Domain Agent react_loop does NOT need to inject these into LangGraph state (session history already handled by LangGraph checkpointer); they are for context-only prompt injection via build_agent_system_prompt
 - resume_after_hitl scope_change branch (T114): return value propagates up to a2a_server which sets A2A task status to completed with output={"__scope_change__": True, "new_request": ...}; Orchestrator detects signal and re-routes request as a new top-level intent
 - No explicit replan gate needed for HITL modify/cancel branches — injecting user feedback into messages causes the LLM to re-reason automatically via the existing ReAct loop (Workplan §1.7 note)
+- Customer Agent memory types (T133): `contact_alias` key = spoken alias text (e.g. "anh Lâm"), content = `{"customer_id": "...", "full_name": "...", "phone": "..."}` — store with confidence=0.9 after each successful lookup; `customer_profile` key = customer_id, content = VIP/purchase history summary; `lookup_pattern` key = tenant_id, content = most effective lookup strategy
+- Customer Agent HITL (T133, T134): `customer__create_customer` and `customer__update_customer` both require `requires_confirmation: true` in tools.yaml — same `_execute_tool` gate pattern as order/bi agents; T132 must add `impact_template` to both tools before T133 can test HITL trigger
+- Customer Agent memory_hit flag (T133, T134): when `contact_alias` resolves the customer_id from memory, set `memory_hit=True` in CustomerLookupResult and skip calling `customer__get_customers` — this is the key SC-024 assertion
+- Customer Agent a2a_server continuation (T134): same HITL continuation pattern as order_agent/a2a_server.py — check `redis.get(f"hitl:{original_task_id}")` to detect pending HITL gate; route to `resume_after_hitl()` if found
+- docker-compose AGENT_SEED_URLS (T136): orchestrator service env must include `http://customer-agent:8004` alongside existing order/bi URLs; AgentRegistry will auto-discover the new agent card within ≤60s of startup
 - Commit after each completed task or logical group; stop at each **Checkpoint** to validate independently before proceeding

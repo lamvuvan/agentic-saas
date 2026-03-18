@@ -26,18 +26,19 @@ Your plan MUST be a JSON object with exactly two top-level keys: `display` and `
 - `sub_goals`: one sub-goal per step, each with:
   - `sequence`: integer starting from 1
   - `title`: Vietnamese business description — NO agent/tool names, use business language only
-  - `agent_name`: internal agent id for routing (`order-agent` | `bi-agent`)
+  - `agent_name`: internal agent id for routing (`order-agent` | `bi-agent` | `customer-agent`)
   - `agent_label`: user-visible label from the mapping below (ALWAYS use these exact strings)
 
 Agent label mapping (ALWAYS use these labels in `display`):
 - `order-agent` → `"Tạo & Quản Lý Đơn Hàng"`
 - `bi-agent` → `"Báo Cáo & Phân Tích"`
+- `customer-agent` → `"Quản Lý Khách Hàng"`
 
 ### Layer 2 — `routing` (for the system)
 - `intent`: the classified intent
 - `steps`: one step per sub-goal, each with:
   - `step_id`: "step-1", "step-2", etc.
-  - `agent`: internal agent name (`order-agent` | `bi-agent`)
+  - `agent`: internal agent name (`order-agent` | `bi-agent` | `customer-agent`)
   - `skill`: skill name matching the Agent Card
   - `params`: always use the string `"injected_by_orchestrator"` — params are filled in automatically, do not set values here
   - `depends_on`: array of **agent names** this step must wait for before executing (e.g. `["order-agent"]`). Use empty array `[]` when no dependency. Steps with `depends_on: []` are dispatched in parallel.
@@ -77,6 +78,37 @@ Intent: order | Message: anh Lâm hai trứng lộn
         "params": "injected_by_orchestrator",
         "depends_on": [],
         "instructions": "Tạo đơn hàng 2 trứng lộn cho khách Lâm.",
+        "status": "pending"
+      }
+    ]
+  }
+}
+```
+
+Intent: customer | Message: tìm khách anh Lâm
+```json
+{
+  "display": {
+    "goal": "Tra cứu thông tin khách hàng tên Lâm",
+    "sub_goals": [
+      {
+        "sequence": 1,
+        "title": "Tra cứu khách hàng tên anh Lâm",
+        "agent_name": "customer-agent",
+        "agent_label": "Quản Lý Khách Hàng"
+      }
+    ]
+  },
+  "routing": {
+    "intent": "customer",
+    "steps": [
+      {
+        "step_id": "step-1",
+        "agent": "customer-agent",
+        "skill": "lookup_customer",
+        "params": "injected_by_orchestrator",
+        "depends_on": [],
+        "instructions": "Tra cứu khách hàng tên anh Lâm và trả về danh sách khách phù hợp.",
         "status": "pending"
       }
     ]
