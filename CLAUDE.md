@@ -1,10 +1,12 @@
 # agentic-saas Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-03-16
+Auto-generated from all feature plans. Last updated: 2026-03-18
 
 ## Active Technologies
 - Python 3.12 + FastAPI 0.111+, LangGraph 0.2+, LangChain, langchain-openai, langgraph-checkpoint-redis, httpx, sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2), faiss-cpu, faster-whisper, asyncpg, pydantic v2, pytest, pytest-asyncio, respx, ruff (002-orchestrator-domain-agents)
 - Redis (LangGraph checkpointer + session state + A2A task store); PostgreSQL (analytics DB for BI queries — already deployed); No new DB schema for v1 (002-orchestrator-domain-agents)
+- Python 3.12 + FastAPI 0.111+, Pydantic v2, LangGraph 0.2+, LangChain, langchain-openai, langgraph-checkpoint-redis, httpx (async), asyncpg, sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`), faiss-cpu, redis, openai (002-orchestrator-domain-agents)
+- Redis (LangGraph checkpointer, session state, A2A task store — 30-min session TTL, 1-hr task TTL); PostgreSQL with pgvector (analytics DB, read-only via BI Agent) (002-orchestrator-domain-agents)
 
 - **Python 3.12** + FastAPI 0.111+, Pydantic v2, httpx (async) — all services
 - **LangGraph / LangChain** — Orchestrator and Domain Agent reasoning pipelines
@@ -126,6 +128,26 @@ python -m evals.runner --suite intent_classification --base-url http://localhost
 
 ---
 
+## Customer Agent Service (002) — port 8004
+
+**Start locally:**
+```bash
+REDIS_URL=redis://localhost:6379/0 TOOL_REGISTRY_URL=http://localhost:8001 uvicorn customer_agent.main:app --port 8004 --reload
+```
+
+**Key files:**
+- [customer_agent/main.py](customer_agent/main.py) — FastAPI app, A2A router, lifespan
+- [customer_agent/a2a_server.py](customer_agent/a2a_server.py) — `POST /a2a/tasks`, `GET /a2a/tasks/{id}`, HITL continuation resume
+- [customer_agent/core/react_loop.py](customer_agent/core/react_loop.py) — `MemoryAwareReActLoop`: contact_alias hit → memory_hit=True, HITL gate on create/update
+- [customer_agent/models.py](customer_agent/models.py) — `CustomerRecord`, `CustomerLookupResult`, `CustomerAgentState`
+- [customer_agent/prompts/customer_agent_v1.md](customer_agent/prompts/customer_agent_v1.md) — system prompt + 6 few-shot examples
+
+**Skills:** `lookup_customer`, `create_customer` (HITL), `update_customer` (HITL)
+**Memory types:** `contact_alias` (alias→customer_id, confidence=0.9), `customer_profile`, `lookup_pattern`
+**HITL key:** `hitl:{task_id}` (1-hour TTL); resumes via POST /a2a/tasks with `params.continuation.task_id`
+
+---
+
 ## Tool Registry Service (001)
 
 **Start locally:**
@@ -150,4 +172,6 @@ pytest tests/001-tool-registry/integration/              # integration tests onl
 <!-- MANUAL ADDITIONS END -->
 
 ## Recent Changes
-- 002-orchestrator-domain-agents: Added Python 3.12 + FastAPI 0.111+, LangGraph 0.2+, LangChain, langchain-openai, langgraph-checkpoint-redis, httpx, sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2), faiss-cpu, faster-whisper, asyncpg, pydantic v2, pytest, pytest-asyncio, respx, ruff
+- 002-orchestrator-domain-agents: Added Python 3.12 + FastAPI 0.111+, Pydantic v2, LangGraph 0.2+, LangChain, langchain-openai, langgraph-checkpoint-redis, httpx (async), asyncpg, sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`), faiss-cpu, redis, openai
+- 002-orchestrator-domain-agents: Added Python 3.12 + FastAPI 0.111+, Pydantic v2, LangGraph 0.2+, LangChain, langchain-openai, langgraph-checkpoint-redis, httpx (async), asyncpg, sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`), faiss-cpu, redis, openai
+- 002-orchestrator-domain-agents: Added Python 3.12 + FastAPI 0.111+, Pydantic v2, LangGraph 0.2+, LangChain, langchain-openai, langgraph-checkpoint-redis, httpx (async), asyncpg, sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`), faiss-cpu, redis, openai

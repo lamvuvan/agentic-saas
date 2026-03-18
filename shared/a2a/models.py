@@ -82,10 +82,40 @@ class PlanStep(BaseModel):
     agent: str  # "order-agent" | "bi-agent"
     skill: str
     params: dict[str, Any]
-    depends_on: list[str] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)  # agent names, not step_ids
+    instructions: str = ""  # Per-step goal from Plan LLM (Vietnamese)
     status: str = "pending"  # pending | running | completed | failed
     result: dict[str, Any] | None = None
     task_id: str | None = None  # A2A task_id once dispatched
+
+
+class A2ATaskPayload(BaseModel):
+    """Enriched task payload sent from DispatchEngine to Domain Agents.
+
+    Four groups:
+    - Identity: task_id, plan_id, sub_goal_sequence, session_id, tenant_id
+    - Intent: original_message, skill, instructions
+    - Conversation: conversation_history (last 6 turns)
+    - Dependencies: dependency_results (upstream agent → result)
+    """
+
+    # Identity
+    task_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    plan_id: str = ""
+    sub_goal_sequence: int = 0
+    session_id: str = ""
+    tenant_id: str = "default"
+
+    # Intent
+    original_message: str = ""
+    skill: str = ""
+    instructions: str = ""  # Per-step goal from Plan LLM
+
+    # Conversation context
+    conversation_history: list[dict[str, str]] = Field(default_factory=list)
+
+    # Dependency results from upstream agents
+    dependency_results: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecutionPlan(BaseModel):

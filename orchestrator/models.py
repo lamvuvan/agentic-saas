@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, TypedDict
 
 from pydantic import BaseModel, Field
@@ -24,6 +25,7 @@ class OrchestratorState(TypedDict, total=False):
     escalated: bool
     model_used: str
     plan: dict[str, Any] | None  # ExecutionPlan serialized
+    plan_id: str | None  # PostgreSQL DisplayPlan id (None if plan persistence unavailable)
     agent_results: list[dict[str, Any]]
     reply: str
     requires_input: bool
@@ -64,11 +66,43 @@ class ChatResponse(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
-class VoiceResponse(BaseModel):
+# ---------------------------------------------------------------------------
+# Plan visibility models (DisplayPlan + PlanSubGoal)
+# ---------------------------------------------------------------------------
+
+
+class PlanSubGoalResponse(BaseModel):
+    """A single step within a DisplayPlan — returned by GET /plans/* endpoints."""
+
+    id: str | None = None
+    plan_id: str | None = None
+    sequence: int
+    title: str
+    agent_name: str  # internal routing identifier (e.g. "bi-agent")
+    agent_label: str  # user-visible display label (e.g. "Báo Cáo & Phân Tích")
+    a2a_task_id: str | None = None
+    status: str = "pending"  # pending | running | completed | failed
+    result_summary: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class DisplayPlanResponse(BaseModel):
+    """User-visible plan stored in PostgreSQL — returned by GET /plans/* endpoints."""
+
+    id: str
     session_id: str
-    transcription: str
-    reply: str
-    intent: str
-    trace_id: str
-    requires_input: bool = False
-    metadata: dict[str, Any] | None = None
+    tenant_id: str | None = None
+    goal: str
+    status: str = "running"  # pending | running | completed | failed
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class PlanDetailResponse(BaseModel):
+    """Full response for GET /plans/* endpoints."""
+
+    plan: DisplayPlanResponse
+    sub_goals: list[PlanSubGoalResponse]
+
+

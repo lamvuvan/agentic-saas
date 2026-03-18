@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -15,6 +16,8 @@ from shared.a2a.models import AgentCard, AgentSkill
 from shared.logging_middleware import StructuredLoggingMiddleware
 
 logger = logging.getLogger(__name__)
+
+_MIGRATION_PATH = Path(__file__).parent.parent / "orchestrator" / "migrations" / "002_agent_memory.sql"
 
 _redis_pool: aioredis.Redis | None = None
 
@@ -27,8 +30,37 @@ async def lifespan(app: FastAPI):
     app.state.redis = _redis_pool
 
     logger.info("bi_agent_startup", extra={"redis_url": redis_url.split("@")[-1]})
+
+    # Initialize MemoryService (optional — graceful degradation when no POSTGRES_DSN)
+    app.state.memory = None
+    postgres_dsn = os.environ.get("POSTGRES_DSN", "")
+    if postgres_dsn:
+        try:
+            import asyncpg  # noqa: PLC0415
+            from shared.memory_service import MemoryService  # noqa: PLC0415
+
+            db_pool = await asyncpg.create_pool(postgres_dsn, min_size=1, max_size=3)
+            app.state.db_pool = db_pool
+
+            # Run migration (idempotent)
+            if _MIGRATION_PATH.exists():
+                migration_sql = _MIGRATION_PATH.read_text(encoding="utf-8")
+                async with db_pool.acquire() as conn:
+                    await conn.execute(migration_sql)
+
+            app.state.memory = MemoryService(db_pool, "bi-agent")
+            logger.info("bi_agent_memory_ready")
+        except Exception as exc:
+            logger.warning("bi_agent_memory_unavailable", extra={"error": str(exc)})
+            app.state.db_pool = None
+    else:
+        app.state.db_pool = None
+
     yield
+
     await _redis_pool.aclose()
+    if getattr(app.state, "db_pool", None) is not None:
+        await app.state.db_pool.close()
 
 
 app = FastAPI(title="BI Agent", version="1.0.0", lifespan=lifespan)

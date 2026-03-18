@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Any
 
-from openai import AsyncOpenAI, RateLimitError
+from openai import RateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -19,18 +19,44 @@ _MODEL_ROUTING: dict[str, str] = {
     "nl2sql": "smart",
     "response_format": "fast",
     "product_rerank": "fast",
+    "extract_learnings": "fast",  # GPT-4o-mini for post-task learning extraction
+    "extract_routing_learnings": "fast",  # GPT-4o-mini for post-plan routing insight extraction
+    "confirm_message": "fast",            # GPT-4o-mini for HITL confirmation message generation
+    "classify_hitl_response": "fast",     # GPT-4o-mini for HITL user response classification
 }
 
 # Confidence threshold — below this, fast tasks escalate to smart model
 ESCALATION_THRESHOLD = 0.72
 
-_client: AsyncOpenAI | None = None
+_client = None
 
 
-def get_client() -> AsyncOpenAI:
+def _is_langfuse_configured() -> bool:
+    return bool(
+        os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY")
+    )
+
+
+def get_client():
+    """Return AsyncOpenAI client — Langfuse-instrumented when env vars are set."""
     global _client
     if _client is None:
-        _client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        api_key = os.environ["OPENAI_API_KEY"]
+        if _is_langfuse_configured():
+            try:
+                from langfuse.openai import AsyncOpenAI  # noqa: PLC0415
+
+                _client = AsyncOpenAI(api_key=api_key)
+                logger.info("llm_client_langfuse_enabled")
+            except ImportError:
+                from openai import AsyncOpenAI  # noqa: PLC0415
+
+                _client = AsyncOpenAI(api_key=api_key)
+                logger.warning("langfuse_import_failed_fallback_openai")
+        else:
+            from openai import AsyncOpenAI  # noqa: PLC0415
+
+            _client = AsyncOpenAI(api_key=api_key)
     return _client
 
 
@@ -58,6 +84,8 @@ async def chat_completion_async(
 
     Always uses temperature=0 for determinism.
     Uses json_schema Structured Outputs when json_schema is provided (not json_object mode).
+    When LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY are set, all calls are traced automatically
+    via the langfuse.openai wrapper with name=task_type and trace metadata.
     """
     model = model_override or select_model(task_type)
     client = get_client()
@@ -69,6 +97,19 @@ async def chat_completion_async(
             "json_schema": json_schema,
         }
 
+    # Langfuse trace metadata — passed as extra kwargs when instrumented client is active
+    langfuse_kwargs: dict[str, Any] = {}
+    if _is_langfuse_configured():
+        langfuse_kwargs["name"] = task_type
+        if extra_log:
+            trace_id = extra_log.get("trace_id")
+            if trace_id:
+                # Langfuse requires 32 lowercase hex chars (no hyphens)
+                langfuse_kwargs["trace_id"] = trace_id.replace("-", "")
+            langfuse_kwargs["metadata"] = {
+                k: v for k, v in extra_log.items() if k != "trace_id"
+            }
+
     last_exc: Exception | None = None
     for attempt in range(max_retries):
         try:
@@ -76,6 +117,7 @@ async def chat_completion_async(
                 "model": model,
                 "messages": messages,
                 "temperature": 0,
+                **langfuse_kwargs,
             }
             if response_format is not None:
                 kwargs["response_format"] = response_format

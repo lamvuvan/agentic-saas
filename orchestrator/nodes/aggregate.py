@@ -21,7 +21,11 @@ _AGGREGATE_SYSTEM = (
 )
 
 
-async def handle_chitchat(message: str, history: list[dict[str, str]] | None = None) -> str:
+async def handle_chitchat(
+    message: str,
+    history: list[dict[str, str]] | None = None,
+    trace_id: str = "",
+) -> str:
     messages = [{"role": "system", "content": _CHITCHAT_SYSTEM}]
     if history:
         for turn in history[-3:]:
@@ -31,6 +35,7 @@ async def handle_chitchat(message: str, history: list[dict[str, str]] | None = N
     content, _ = await chat_completion_async(
         messages=messages,
         task_type="response_format",
+        extra_log={"trace_id": trace_id} if trace_id else None,
     )
     return content.strip()
 
@@ -40,6 +45,7 @@ async def aggregate_results(
     intent: str,
     agent_results: list[dict[str, Any]],
     history: list[dict[str, str]] | None = None,
+    trace_id: str = "",
 ) -> tuple[str, bool]:
     """
     Synthesize agent results into a final user reply.
@@ -48,7 +54,7 @@ async def aggregate_results(
         (reply_text, requires_input)
     """
     if intent == "chitchat":
-        reply = await handle_chitchat(message, history)
+        reply = await handle_chitchat(message, history, trace_id=trace_id)
         return reply, False
 
     if not agent_results:
@@ -78,5 +84,6 @@ async def aggregate_results(
     content, _ = await chat_completion_async(
         messages=messages,
         task_type="response_format",
+        extra_log={"trace_id": trace_id} if trace_id else None,
     )
     return content.strip(), False

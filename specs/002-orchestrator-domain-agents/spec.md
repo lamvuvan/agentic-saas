@@ -7,24 +7,25 @@
 
 ## Overview
 
-Staff at a retail/restaurant business interact with an AI assistant using natural language — including Vietnamese — to create orders and query business data. An Orchestrator receives every message, determines what the user wants, and routes the task to the appropriate specialist agent (Order Agent or BI Agent). Each specialist agent reasons through the task, calls the necessary tools, and returns a structured result. The Orchestrator assembles the final response for the user.
+Staff at a retail/restaurant business interact with an AI assistant using natural language — including Vietnamese — to create orders, query business data, and manage customer records. An Orchestrator receives every message, determines what the user wants, and routes the task to the appropriate specialist agent (Order Agent, BI Agent, or Customer Agent). Each specialist agent reasons through the task, calls the necessary tools, and returns a structured result. The Orchestrator assembles the final response for the user.
 
 ## User Scenarios & Testing
 
 ### User Story 1 — Intent Routing (Priority: P1)
 
-A staff member sends a free-text message. The Orchestrator correctly identifies whether it is an order request, a business intelligence query, or casual conversation, and routes it to the right specialist agent without the user having to specify what kind of request it is.
+A staff member sends a free-text message. The Orchestrator correctly identifies whether it is an order request, a business intelligence query, a customer management request, or casual conversation, and routes it to the right specialist agent without the user having to specify what kind of request it is.
 
 **Why this priority**: All downstream value depends on correct routing. Without accurate intent classification, every other capability is unusable.
 
-**Independent Test**: Send 20 diverse text messages covering order, BI, and conversational intents. Verify that at least 18/20 are classified correctly and routed to the matching agent stub (no real agent logic required).
+**Independent Test**: Send 20 diverse text messages covering order, BI, customer, and conversational intents. Verify that at least 18/20 are classified correctly and routed to the matching agent stub (no real agent logic required).
 
 **Acceptance Scenarios**:
 
 1. **Given** a staff member sends "cho tôi xem doanh thu hôm nay", **When** the Orchestrator processes the message, **Then** the request is classified as a BI query and forwarded to the BI Agent.
 2. **Given** a staff member sends "anh Lâm hai trứng lộn một cháo lòng", **When** the Orchestrator processes the message, **Then** the request is classified as an order and forwarded to the Order Agent.
-3. **Given** a staff member sends "xin chào", **When** the Orchestrator processes the message, **Then** the system replies with a polite conversational response without routing to any agent.
-4. **Given** a message that is ambiguous, **When** the Orchestrator cannot classify with sufficient confidence, **Then** it asks the user a single clarifying question rather than routing incorrectly.
+3. **Given** a staff member sends "tìm khách hàng tên Hoa số điện thoại 09xx", **When** the Orchestrator processes the message, **Then** the request is classified as a customer management request and forwarded to the Customer Agent.
+4. **Given** a staff member sends "xin chào", **When** the Orchestrator processes the message, **Then** the system replies with a polite conversational response without routing to any agent.
+5. **Given** a message that is ambiguous, **When** the Orchestrator cannot classify with sufficient confidence, **Then** it asks the user a single clarifying question rather than routing incorrectly.
 
 ---
 
@@ -96,6 +97,115 @@ The Orchestrator delegates tasks to Domain Agents using a standardized asynchron
 
 ---
 
+### User Story 7 — Plan Visibility (Priority: P2)
+
+A staff member can see what the system is doing in real-time while it processes their request. The system exposes a business-friendly plan with a Vietnamese goal description and a checklist of sub-goals, each showing whether it is pending, running, or completed.
+
+**Why this priority**: Requests involving multiple agents (order + BI) can take several seconds. Without progress visibility, users have no feedback and may assume the system is broken.
+
+**Independent Test**: Submit a request, then poll `GET /plans/{session_id}/current` — verify the plan appears within 200ms of the response and that sub-goal status transitions from `pending` → `running` → `completed` as A2A tasks progress.
+
+**Acceptance Scenarios**:
+
+1. **Given** a request is being processed, **When** the frontend polls `GET /plans/{session_id}/current`, **Then** it receives the plan's goal text in Vietnamese and a list of sub-goals with their current status.
+2. **Given** a sub-goal is dispatched to a Domain Agent, **When** the A2A task status changes to `completed`, **Then** the sub-goal status is updated to `completed` and includes a `result_summary`.
+3. **Given** all sub-goals are completed, **When** the polling endpoint is called, **Then** the parent plan status is `completed`.
+4. **Given** an A2A task fails, **When** the polling endpoint is called, **Then** the affected sub-goal shows `failed` status — the plan does not silently remain `running`.
+5. **Given** the frontend requests `GET /plans/{plan_id}`, **Then** the response does not expose internal agent names or technical parameters to the user — only the `agent_label` is returned.
+
+---
+
+### User Story 8 — Domain Agent Memory (Priority: P2)
+
+A Domain Agent learns from past tasks and accumulated domain knowledge. Over time it recognises returning customers' preferences, resolves ambiguous product names using previously-confirmed aliases, and avoids SQL mistakes it has corrected before — without the user needing to repeat context they've already provided.
+
+**Why this priority**: Repeated friction (re-confirming the same alias, same customer pref, same SQL fix) erodes trust. Memory turns one-off corrections into permanent improvements that compound in value.
+
+**Independent Test**: Submit the same order twice using an alias ("ba đen"). After the first task the alias is stored. On the second task the agent must resolve "ba đen" → "cafe đen đá size L" from memory without prompting the user.
+
+**Acceptance Scenarios**:
+
+1. **Given** an Order Agent task that resolves "ba đen" to "cafe đen đá size L", **When** the task completes, **Then** a `product_alias` memory entry is stored linking "ba đen" → "cafe đen đá size L" with confidence ≥ 0.8.
+2. **Given** a returning customer "Lâm" who previously ordered "trứng lộn x2", **When** the Order Agent processes a new order for that customer, **Then** the customer preference is injected into the system prompt so the agent may anticipate it.
+3. **Given** the BI Agent previously corrected "doanh thu" → `net_revenue` column, **When** a similar query arrives, **Then** the correction is loaded from semantic memory and applied before generating SQL.
+4. **Given** a completed A2A task, **When** learning extraction runs, **Then** ≤ 3 facts are upserted into `agent_memory` and a row is inserted into `agent_task_history` — the task is not blocked if extraction fails.
+5. **Given** `POSTGRES_DSN` is not configured, **When** a Domain Agent starts, **Then** memory features degrade gracefully (no DB calls) and normal task processing continues unaffected.
+
+---
+
+### User Story 9 — Orchestrator Memory (Priority: P2)
+
+The Orchestrator learns from past routing decisions and plan outcomes. Over time it recognises which agent combinations work best for specific request types, reuses successful plan structures, and avoids routing strategies that previously failed — without the user needing to see any of this meta-learning.
+
+**Why this priority**: Routing errors (sending an order+BI combined request to a single agent) degrade UX and waste tokens. Memory at the Orchestrator level turns one-off corrections into permanent routing improvements that compound across all tenants.
+
+**Independent Test**: Submit a combined order+BI request, complete it successfully. After completion, trigger learning extraction. On the next similar request, verify the routing pattern is loaded into the plan prompt (appears in rendered system prompt context).
+
+**Acceptance Scenarios**:
+
+1. **Given** a completed plan with `status=completed`, **When** `extract_and_store()` runs, **Then** ≤ 3 routing insights are upserted into `orchestrator_memory` — the plan is not blocked if extraction fails.
+2. **Given** a tenant with existing routing patterns, **When** the Plan node generates a new plan, **Then** relevant `routing_pattern` and `similar_plans` entries appear in the system prompt passed to GPT-4o.
+3. **Given** a routing fix was previously stored ("order+bi → run BI first"), **When** a similar combined request arrives, **Then** the routing_fix context is injected and the Plan node can apply it.
+4. **Given** `POSTGRES_DSN` is not configured, **When** the Orchestrator processes a request, **Then** memory retrieval and storage are silently skipped — planning continues without degradation.
+5. **Given** a `routing_fix` entry already stored with confidence 0.7, **When** a new extraction produces the same key with confidence 0.6, **Then** the stored confidence remains 0.7 (GREATEST semantics).
+
+---
+
+### User Story 10 — HITL Confirmation for Mutating Tools (Priority: P1)
+
+Before a Domain Agent executes any tool that modifies data (creates order, updates order, cancels order, creates customer), it must pause the ReAct loop, generate a clear Vietnamese confirmation message describing the action and its impact, and wait for explicit staff approval. The agent resumes only after the user confirms, or gracefully handles modifications, cancellations, and scope changes.
+
+**Why this priority**: Mutating operations are irreversible or difficult to reverse. An agent executing `order__create_order` or `order__cancel_order` without human approval exposes the business to errors and loss of trust. HITL is the safety gate for all write operations.
+
+**Independent Test**: Trigger an Order Agent task that calls `order__create_order`. Verify that: (1) the A2A task transitions to `input_required` before the tool executes; (2) the confirmation message contains the order details and impact in Vietnamese; (3) after the user confirms, the tool executes and the task transitions to `completed`.
+
+**Acceptance Scenarios**:
+
+1. **Given** the Order Agent is about to call `order__create_order`, **When** the tool is detected as mutating (`requires_confirmation: true`), **Then** the ReAct loop pauses, the A2A task status becomes `input_required`, and the user receives a Vietnamese confirmation message stating the order details and total amount.
+2. **Given** the user responds "xác nhận" or equivalent, **When** `resume_after_hitl()` classifies the intent as `confirm`, **Then** the tool executes with the original arguments and the ReAct loop continues to completion.
+3. **Given** the user responds with a modification (e.g., "giảm xuống 2 ly"), **When** `resume_after_hitl()` classifies the intent as `modify`, **Then** the user response is injected into the message context and the ReAct loop re-reasons with the updated intent — no explicit replan needed.
+4. **Given** the user responds "thôi bỏ đi" or equivalent, **When** `resume_after_hitl()` classifies the intent as `cancel`, **Then** a cancellation message is injected and the ReAct loop re-reasons to acknowledge cancellation — the mutating tool is NOT called.
+5. **Given** a read-only tool (`requires_confirmation: false`) such as `customer__get_customers`, **When** the agent calls it, **Then** it executes immediately without any confirmation pause.
+6. **Given** `impact_template` is defined in `tools.yaml` for `order__cancel_order`, **When** the confirmation message is generated, **Then** the message includes the order ID, item count, and total amount — never a generic "confirm?" without context.
+
+---
+
+### User Story 11 — Parallel & Sequential Task Dispatch (Priority: P1)
+
+The Orchestrator dispatches tasks to Domain Agents in parallel when steps have no dependencies, and in sequence when one step's output is required by another. Each Domain Agent receives a rich `A2ATaskPayload` that includes the original user message, per-step instructions, conversation history, and the results of any upstream steps — so downstream agents have full context without the user repeating anything.
+
+**Why this priority**: Combined order+BI requests ("đặt 3 bò kho và cho tôi xem doanh thu hôm nay") can serve both agents simultaneously. Sequential dispatch with dependency injection enables agents to build on each other's work — the Order Agent can reference a customer record created by a prior step. Without this, multi-agent plans are either slow (forced serial) or context-blind (agents can't reference upstream results).
+
+**Independent Test**: Submit a request that produces a plan with two independent steps (order + BI). Verify both A2A tasks are submitted within 200ms of each other (parallel dispatch). Then submit a request where step 2 `depends_on` step 1 — verify step 2's `A2ATaskPayload.dependency_results` contains step 1's output.
+
+**Acceptance Scenarios**:
+
+1. **Given** a plan with two steps both having `depends_on: []`, **When** the DispatchEngine executes, **Then** both A2A tasks are submitted concurrently via `asyncio.gather` — not serially.
+2. **Given** a plan where step 2 `depends_on: ["order-agent"]`, **When** step 1 (order-agent) completes, **Then** step 2's `A2ATaskPayload.dependency_results` contains `{"order-agent": <step1_result>}`.
+3. **Given** an upstream step fails, **When** a downstream step `depends_on` it, **Then** the downstream step is not dispatched and its sub-goal status is set to `failed`.
+4. **Given** a Domain Agent receives an `A2ATaskPayload`, **When** it builds its system prompt via `build_agent_system_prompt()`, **Then** the prompt includes the `instructions` field as the task goal, the `original_message` for context, and any `dependency_results` as prior step context.
+5. **Given** an `A2ATaskPayload` with `conversation_history` (last 6 turns), **When** the Domain Agent builds its system prompt, **Then** recent conversation turns are included so the agent can reference prior context without requiring the Orchestrator to re-state it.
+
+---
+
+### User Story 12 — Customer Management (Priority: P1)
+
+A staff member can look up, create, or update customer records using natural Vietnamese. The Customer Agent handles all customer-lifecycle operations (find by name or phone, create new record, update contact info, view purchase history) as a dedicated specialist — freeing the Order Agent from inline customer lookups.
+
+**Why this priority**: The Order Agent already calls `customer__get_customers` internally, but mixing order-creation logic with customer-management logic violates single responsibility. A dedicated Customer Agent enables direct "tìm khách", "thêm khách", "cập nhật SĐT" requests without coupling them to order flows. It also enables the Orchestrator to route customer-only queries to the correct agent.
+
+**Independent Test**: Submit 10 Customer Agent tasks covering: lookup by name, lookup by phone, create new customer, update phone number, view purchase history. Verify at least 9/10 return correct results and the agent card exposes `lookup_customer`, `create_customer`, `update_customer` skills.
+
+**Acceptance Scenarios**:
+
+1. **Given** a staff member sends "tìm khách hàng anh Lâm", **When** the Orchestrator processes it, **Then** the request is classified as `customer` and forwarded to the Customer Agent with skill `lookup_customer`.
+2. **Given** the Customer Agent receives a `lookup_customer` task, **When** it calls `customer__get_customers` via the Tool Registry, **Then** it returns a list of matching customers with names, phone numbers, and IDs.
+3. **Given** a staff member requests "thêm khách mới tên Hoa SĐT 09xx", **When** the Customer Agent processes `create_customer`, **Then** the HITL gate pauses the loop, presents a Vietnamese confirmation ("Tạo khách hàng mới: Hoa – 09xx"), and only creates the record after explicit staff approval.
+4. **Given** a returning customer "anh Lâm" is looked up a second time, **When** the Customer Agent retrieves `contact_alias` memory, **Then** it resolves "anh Lâm" → stored `customer_id` without calling `customer__get_customers` again.
+5. **Given** `contact_alias` or `customer_profile` memories exist for a customer, **When** the Customer Agent builds its system prompt, **Then** stored aliases and profiles are injected via `build_agent_system_prompt()` so the agent can reference prior lookup patterns.
+
+---
+
 ### User Story 6 — Voice Input (Priority: P2)
 
 A staff member speaks a request instead of typing. The system transcribes the audio and processes it identically to a typed message, routing to the same agents with the same quality.
@@ -119,6 +229,7 @@ A staff member speaks a request instead of typing. The system transcribes the au
 - What happens when the AI reasoning times out mid-task? → The agent returns a user-friendly message; the failure is logged for observability.
 - What happens when a customer has multiple name matches? → Order Agent presents the top matches and asks the user to confirm which one.
 - What happens when a staff member cancels an in-progress order preview? → Order Agent discards the draft and acknowledges the cancellation.
+- What happens when the HITL classification cannot determine the user's intent? → System defaults to `cancel` to avoid unintended data mutation; user is informed and can retry.
 - What happens when a voice clip is too long or too noisy? → System responds with a clear "could not understand" message — no silent failure.
 - What happens when the same session ID is used concurrently from two devices? → Each request is processed in turn; state reflects the last confirmed action.
 
@@ -131,7 +242,7 @@ A staff member speaks a request instead of typing. The system transcribes the au
 **Orchestrator**
 
 - **FR-001**: The Orchestrator MUST accept user messages via an HTTP text endpoint and return a response.
-- **FR-002**: The Orchestrator MUST classify each message into one of: `order`, `bi_query`, `chitchat`, or `unknown`, with accuracy ≥ 90% on standard test inputs.
+- **FR-002**: The Orchestrator MUST classify each message into one of: `order`, `bi_query`, `customer`, `chitchat`, or `unknown`, with accuracy ≥ 90% on standard test inputs.
 - **FR-003**: The Orchestrator MUST create a serializable execution plan before delegating tasks to Domain Agents — the plan must be observable in structured logs.
 - **FR-004**: The Orchestrator MUST delegate tasks to the appropriate Domain Agent via the A2A protocol, forwarding the caller's Bearer token.
 - **FR-005**: The Orchestrator MUST aggregate Domain Agent responses and return a single coherent reply to the user.
@@ -161,15 +272,67 @@ A staff member speaks a request instead of typing. The system transcribes the au
 - **FR-020**: Domain Agents MUST expose a task status endpoint that returns current status and result when complete.
 - **FR-021**: Task status MUST follow the lifecycle: `submitted` → `working` → `completed` (or `failed` / `timeout`).
 
+**Plan Persistence & Display**
+
+- **FR-022**: The Orchestrator MUST generate a dual-layer plan in a single LLM call: a `display` layer (Vietnamese business language goal + sub-goals with agent labels) and a `routing` layer (internal technical steps for A2A dispatch).
+- **FR-023**: The Orchestrator MUST persist the display plan to PostgreSQL immediately after the Plan node completes — before any A2A dispatch begins. The `plans` row MUST be inserted with `status=running` and all `plan_sub_goals` rows inserted in the same operation.
+- **FR-024**: The Orchestrator MUST expose `GET /plans/{session_id}/current` (latest plan for session) and `GET /plans/{plan_id}` (plan detail) endpoints.
+- **FR-025**: Sub-goal status MUST be automatically synchronized with the A2A task status in the dispatch polling loop — no manual status management. When all sub-goals reach a terminal state, the parent plan status MUST be automatically updated to `completed` or `failed`.
+- **FR-026**: The `agent_label` field (e.g. "Tạo & Quản Lý Đơn Hàng") MUST be used in all user-visible responses; internal `agent_name` values (e.g. "order-agent") MUST NOT appear in API responses intended for end users.
+
+**Domain Agent Memory**
+
+- **FR-027**: Each Domain Agent MUST retrieve relevant semantic memories (facts, aliases, preferences, SQL patterns) before starting its reasoning loop, and inject them into the system prompt.
+- **FR-028**: After each completed A2A task, a Domain Agent MUST call GPT-4o-mini to extract ≤ 3 useful facts and upsert them into `agent_memory`. This extraction is best-effort — failures MUST NOT block task completion.
+- **FR-029**: After each A2A task, a Domain Agent MUST record a row in `agent_task_history` with `input_summary`, `outcome`, `key_decisions`, `learnings`, and `duration_ms`. Raw PII MUST NOT be stored in `input_summary`.
+- **FR-030**: `MemoryService` MUST be a shared library (`shared/memory_service.py`) usable by both Order Agent and BI Agent without duplication.
+- **FR-031**: When `POSTGRES_DSN` is not configured, memory retrieval and storage MUST be silently skipped — the agent MUST function normally without memory.
+
+**Customer Domain Agent**
+
+- **FR-046**: The Customer Agent MUST expose three A2A skills: `lookup_customer` (find by name or phone via `customer__get_customers`), `create_customer` (create new record via `customer__create_customer`), and `update_customer` (update contact info via `customer__update_customer`).
+- **FR-047**: The Customer Agent MUST implement `MemoryAwareReActLoop` with memory types `contact_alias`, `customer_profile`, and `lookup_pattern`. On lookup completion, a `contact_alias` entry MUST be stored mapping the spoken name/alias → `customer_id`. On subsequent calls with the same alias, the agent MUST resolve `customer_id` from memory without re-calling the Tool Registry.
+- **FR-048**: `customer__create_customer` MUST be a mutating tool (`requires_confirmation: true`) — the HITL gate MUST pause the Customer Agent ReAct loop and present a Vietnamese confirmation message before creating any customer record.
+
+**Task Dispatch & Dependency Engine**
+
+- **FR-043**: The Orchestrator MUST send an `A2ATaskPayload` to Domain Agents that includes four groups: Identity (`task_id`, `plan_id`, `sub_goal_sequence`, `session_id`, `tenant_id`), Intent (`original_message`, `skill`, `instructions` — a per-step goal string generated by the Plan LLM), Conversation context (`conversation_history`: last 6 turns from session), and Dependency results (`dependency_results`: `dict[str, dict]` mapping upstream agent name → result).
+- **FR-044**: The `PlanStep` schema MUST include `depends_on: list[str]` (agent names this step waits for) and `instructions: str` (a plain-language description of this specific step's goal, generated by the Plan node LLM). Both fields MUST be populated for every step in the routing plan.
+- **FR-045**: The `DispatchEngine` at `orchestrator/core/dispatch_engine.py` MUST execute steps in dependency order: steps with empty `depends_on` are dispatched in parallel via `asyncio.gather`; downstream steps are dispatched only after all their dependencies have completed and `dependency_results` is injected into their `A2ATaskPayload`. If an upstream step fails, all downstream steps that depend on it MUST be skipped with `failed` status.
+
+**HITL — Human-in-the-Loop Confirmation**
+
+- **FR-037**: Domain Agents MUST check `requires_confirmation` on each tool definition before execution. Tools with `requires_confirmation: false` (read-only) MUST execute immediately. Tools with `requires_confirmation: true` (mutating) MUST pause the ReAct loop and return a `__hitl__` signal.
+- **FR-038**: When a mutating tool is detected, the agent MUST call GPT-4o-mini with `CONFIRM_PROMPT` and the tool's `impact_template` (from `tools.yaml`) to generate a concise Vietnamese confirmation message stating the action, its data impact, and a clear confirmation request.
+- **FR-039**: The A2A task status MUST transition to `input_required` when HITL is triggered. The `input_request` field MUST contain the generated confirmation message. The ReAct loop MUST be suspended until `resume_after_hitl()` is called.
+- **FR-040**: `resume_after_hitl()` MUST classify the user response into one of four intents: `confirm` | `modify` | `cancel` | `scope_change`. Each intent drives a distinct code path: confirm → execute tool and continue loop; modify → inject response and re-reason; cancel → inject cancellation and re-reason; scope_change → return `__scope_change__` signal to Orchestrator.
+- **FR-041**: The `config/tools.yaml` tool definitions for all mutating tools MUST include `requires_confirmation: true` and an `impact_template` string describing the data change for confirmation message generation.
+- **FR-042**: HITL response classification (`_classify_hitl_response`) MUST use GPT-4o-mini with a Vietnamese-aware prompt. The `confirm_message` task type MUST be routed to `fast` model in `shared/llm_client.py`.
+
+**Orchestrator Memory**
+
+- **FR-032**: The Orchestrator MUST persist routing patterns, plan templates, user patterns, and routing fixes to a `orchestrator_memory` table (migration 003) via `OrchestratorMemoryService`.
+- **FR-033**: After each plan reaches `completed` status, the Orchestrator MUST call GPT-4o-mini to extract ≤ 3 routing insights and upsert them into `orchestrator_memory`. This extraction is best-effort — failures MUST NOT block any response.
+- **FR-034**: The Plan node MUST retrieve relevant routing patterns and similar completed plans before calling GPT-4o, and inject them into the system prompt via `{routing_memory}` and `{similar_plans}` placeholders.
+- **FR-035**: `OrchestratorMemoryService` MUST use GREATEST semantics on conflict — confidence is only updated if the new value exceeds the existing value.
+- **FR-036**: When `POSTGRES_DSN` is not configured, `OrchestratorMemoryService` MUST be `None` and all memory calls in the Plan node MUST be silently skipped.
+
 ### Key Entities
 
 - **UserSession**: A conversation context keyed by session ID, holding message history (last N turns), current in-progress task state, and session expiry timestamp.
 - **IntentClassification**: The result of classifying a message — intent type, confidence score, and any extracted top-level entities.
 - **ExecutionPlan**: A serializable ordered list of steps the Orchestrator will take — which agent, skill, and parameters — created before any delegation.
 - **A2ATask**: An asynchronous work unit submitted to a Domain Agent — task ID, skill name, input parameters, status, result payload, and timestamps.
+- **DisplayPlan**: The user-visible representation of a plan persisted in PostgreSQL — plan ID, session ID, goal text (Vietnamese), status (`pending` | `running` | `completed` | `failed`), and a list of sub-goals. Decoupled from the internal routing plan.
+- **PlanSubGoal**: A single step within a DisplayPlan — sequence number, title (Vietnamese business language), `agent_name` (internal, for routing/debug), `agent_label` (user-visible display name), `a2a_task_id` (nullable until dispatched), status, `result_summary`, and timestamps.
 - **OrderDraft**: An intermediate order held during multi-turn confirmation — customer identity, resolved items (with product IDs and prices), table number, discount, and notes.
 - **OrderEntities**: NLP extraction output from a raw order message — customer name, honorific, table number, and a list of (product query, quantity, note) tuples.
 - **BIQueryResult**: BI Agent output — the generated query, rows returned (up to the limit), row count, and a formatted human-readable summary.
+- **AgentMemory**: A persistent semantic fact stored per agent and tenant — `memory_type` (Order Agent: `product_alias` | `customer_pref` | `order_pattern` | `vn_expression`; BI Agent: `sql_pattern` | `glossary_fix` | `column_alias` | `query_template`; Customer Agent: `contact_alias` | `customer_profile` | `lookup_pattern`), lookup `key`, `content`, `confidence`, `usage_count`. Upserted after each task; updated on retrieval.
+- **AgentTaskHistory**: An episodic record of a completed A2A task — `agent_name`, `tenant_id`, `plan_id` (FK → plans), `skill`, `input_summary` (no raw PII), `outcome` (`success` | `failed` | `cancelled`), `key_decisions` (JSONB), `learnings`, `duration_ms`. Used by `find_similar_tasks()` to surface past patterns.
+- **HITLConfirmation**: A transient confirmation state created when a mutating tool is intercepted — `tool_name`, `pending_args`, `confirmation_message` (Vietnamese), `intent` (after user responds: `confirm` | `modify` | `cancel` | `scope_change`). Not persisted; held in ReAct loop context until resolved.
+- **A2ATaskPayload**: The enriched task payload sent from the Orchestrator to a Domain Agent — four groups: (1) Identity: `task_id`, `plan_id`, `sub_goal_sequence`, `session_id`, `tenant_id`; (2) Intent: `original_message`, `skill`, `instructions` (per-step goal from Plan LLM); (3) Conversation: `conversation_history` (last 6 turns); (4) Dependencies: `dependency_results` (`dict[str, dict]` — upstream agent name → its result). The Domain Agent's `build_agent_system_prompt(payload, memory_context)` assembles these groups into the LLM system prompt.
+- **OrchestratorMemory**: A persistent routing fact stored per tenant — `memory_type` (`routing_pattern` | `plan_template` | `user_pattern` | `routing_fix`), lookup `key`, `content`, `confidence`, `usage_count`. GREATEST semantics on upsert. Used by `OrchestratorMemoryService` to inject routing context into the Plan node system prompt before GPT-4o is called.
 
 ---
 
@@ -189,6 +352,18 @@ A staff member speaks a request instead of typing. The system transcribes the au
 - **SC-010**: Zero occurrences of any Bearer token appearing in any log, database, or API response body across all services.
 - **SC-011**: A2A task lifecycle (`submitted` → `working` → `completed`) executes correctly in 100% of test runs.
 - **SC-012**: Six live demo scenarios (2 order chat, 1 order voice, 1 BI revenue, 1 BI customer ranking, 1 BI debt) complete without unhandled errors.
+- **SC-013**: `GET /plans/{session_id}/current` returns a plan with correct sub-goal statuses within 200ms of A2A task status change on 100% of polling requests.
+- **SC-014**: Plan is persisted to PostgreSQL within 200ms of Plan node completion across all end-to-end test cases.
+- **SC-015**: After a product alias is confirmed in one Order Agent task, a second task using that alias resolves without user confirmation in 100% of test runs.
+- **SC-016**: Learning extraction (GPT-4o-mini) completes within 2 seconds after task completion and does not increase overall task P95 latency by more than 2 seconds.
+- **SC-017**: Zero PII (customer names, phone numbers) stored in `agent_task_history.input_summary` across all test cases.
+- **SC-018**: After a plan completes, routing insight extraction finishes within 2 seconds and does not increase plan P95 latency by more than 2 seconds.
+- **SC-019**: On the second identical combined request type, the Plan node system prompt contains the matching `routing_pattern` entry from `orchestrator_memory` in 100% of test runs.
+- **SC-020**: Every mutating tool call (`requires_confirmation: true`) pauses the ReAct loop and transitions the A2A task to `input_required` in 100% of test runs — no mutating tool executes without prior user confirmation.
+- **SC-021**: HITL confirmation message contains tool name, action description, and data impact in Vietnamese in 100% of test runs. Classification latency (GPT-4o-mini) ≤ 500ms added to total task latency.
+- **SC-022**: When an Orchestrator plan has two independent steps (both `depends_on: []`), both A2A tasks are submitted within 200ms of each other (parallel dispatch) in 100% of test runs.
+- **SC-023**: When a plan step has `depends_on` set, the downstream Domain Agent's `A2ATaskPayload.dependency_results` contains the upstream agent's result in 100% of test runs.
+- **SC-024**: Customer Agent processes `lookup_customer`, `create_customer`, and `update_customer` with ≥ 90% success rate on 10 representative test scenarios. On the second lookup of the same alias (e.g., "anh Lâm"), `contact_alias` memory resolves the `customer_id` without calling `customer__get_customers` in 100% of test runs.
 
 ---
 
@@ -208,9 +383,7 @@ A staff member speaks a request instead of typing. The system transcribes the au
 ## Out of Scope (v1)
 
 - Real-time streaming WebSocket chat responses
-- Parallel multi-agent task execution (sequential delegation only in MVP)
-- Inventory Agent, Campaign Agent, or any agent beyond Order and BI
+- Inventory Agent, Campaign Agent, or any agent beyond Order, BI, and Customer
 - Tool Registry v2 (database-backed) — v1 YAML config only
-- Human-in-the-loop (HITL) approval gateway
 - Monitoring dashboard or alerting
 - Multi-language support beyond Vietnamese input and English error messages

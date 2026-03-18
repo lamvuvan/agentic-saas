@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as aioredis
+
+if TYPE_CHECKING:
+    from orchestrator.core.orchestrator_memory import OrchestratorMemoryService
+    from orchestrator.core.plan_service import PlanService
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +41,7 @@ async def setup_checkpointer(redis_url: str | None = None) -> None:
     try:
         from langgraph.checkpoint.redis.aio import AsyncRedisSaver  # noqa: PLC0415
 
-        _saver = AsyncRedisSaver.from_conn_string(url)
+        _saver = AsyncRedisSaver(redis_url=url)
         await _saver.asetup()
         logger.info("orchestrator_checkpointer_ready", extra={"redis_url": url.split("@")[-1]})
     except Exception as exc:  # pragma: no cover
@@ -53,6 +57,10 @@ async def invoke_chat(
     session_id: str,
     trace_id: str = "",
     redis: aioredis.Redis | None = None,
+    registry: Any = None,
+    plan_service: "PlanService | None" = None,
+    tenant_id: str = "default",
+    orchestrator_memory: "OrchestratorMemoryService | None" = None,
 ) -> dict[str, Any]:
     """
     Main entry point for the Orchestrator graph.
@@ -110,7 +118,7 @@ async def invoke_chat(
             "model_used": model_used,
         }
 
-    # Node 2: Generate execution plan
+    # Node 2: Generate execution plan (dual-layer: display + routing)
     if redis is None:
         # Fallback in-memory mock for tests without Redis
         from unittest.mock import AsyncMock, MagicMock  # noqa: PLC0415
@@ -121,12 +129,16 @@ async def invoke_chat(
     else:
         redis_for_plan = redis
 
-    plan = await generate_plan(
+    plan, pg_plan_id = await generate_plan(
         message=message,
         intent=intent,
         session_id=session_id,
         redis=redis_for_plan,
         trace_id=trace_id,
+        registry=registry,
+        plan_service=plan_service,
+        tenant_id=tenant_id,
+        memory=orchestrator_memory,
     )
 
     # Node 3: Dispatch to agents (with replanning)
@@ -134,7 +146,15 @@ async def invoke_chat(
     replan_count = 0
 
     while replan_count <= MAX_REPLAN_ATTEMPTS:
-        results, needs_replan = await dispatch_plan(plan=plan, trace_id=trace_id)
+        results, needs_replan = await dispatch_plan(
+            plan=plan,
+            trace_id=trace_id,
+            registry=registry,
+            plan_service=plan_service,
+            plan_id=pg_plan_id,
+            session={"session_id": session_id, "turns": history, "last_user_message": message},
+            tenant_id=tenant_id,
+        )
         agent_results = results
 
         if not needs_replan:
@@ -165,6 +185,7 @@ async def invoke_chat(
         intent=intent,
         agent_results=agent_results,
         history=history,
+        trace_id=trace_id,
     )
 
     # Save turn to session history

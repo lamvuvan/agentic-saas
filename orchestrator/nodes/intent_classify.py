@@ -22,7 +22,17 @@ _INTENT_SCHEMA = {
         "properties": {
             "intent": {"type": "string", "enum": ["order", "bi_query", "chitchat", "unknown"]},
             "confidence": {"type": "number"},
-            "entities": {"type": "object", "additionalProperties": True},
+            "entities": {
+                "type": "object",
+                "properties": {
+                    "customer_name": {"type": ["string", "null"]},
+                    "table_number": {"type": ["string", "null"]},
+                    "product_query": {"type": ["string", "null"]},
+                    "time_range": {"type": ["string", "null"]},
+                },
+                "required": ["customer_name", "table_number", "product_query", "time_range"],
+                "additionalProperties": False,
+            },
             "reasoning": {"type": "string"},
         },
         "required": ["intent", "confidence", "entities", "reasoning"],
