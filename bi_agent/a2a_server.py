@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -28,15 +29,59 @@ class TaskSubmitResponse(BaseModel):
     status: str
 
 
-async def _process_bi_task(task_id: str, task: A2ATask, redis: aioredis.Redis) -> None:
+async def _process_bi_task(
+    task_id: str,
+    task: A2ATask,
+    redis: aioredis.Redis,
+    memory: Any = None,
+) -> None:
     """Execute the BI Agent graph for this task in the background."""
     await update_task_status(redis, task_id, TaskStatus.WORKING)
 
     try:
-        # Graph invocation wired in T060 (Phase 6)
-        from bi_agent.graph import run_bi_graph  # noqa: PLC0415
+        from bi_agent.core.react_loop import MemoryAwareReActLoop  # noqa: PLC0415
 
-        result = await run_bi_graph(task_id=task_id, params=task.params)
+        loop = MemoryAwareReActLoop(skill="bi_query")
+        params = task.params
+        continuation = params.get("continuation")
+
+        # ── HITL continuation path ────────────────────────────────────────
+        if continuation and continuation.get("task_id"):
+            original_task_id = continuation["task_id"]
+            hitl_raw = await redis.get(f"hitl:{original_task_id}")
+            if hitl_raw:
+                user_input = continuation.get("user_input", "")
+                tool_registry_url = os.environ.get("TOOL_REGISTRY_URL", "")
+                result = await loop.resume_after_hitl(
+                    user_response=user_input,
+                    task_id=original_task_id,
+                    redis=redis,
+                    tool_registry_url=tool_registry_url,
+                )
+                if result.get("__scope_change__"):
+                    a2a_result = A2AResult(
+                        output={"__scope_change__": True, "new_request": result.get("new_request", "")},
+                        reasoning_summary="Người dùng thay đổi yêu cầu sang chủ đề mới",
+                        confidence=1.0,
+                    )
+                else:
+                    a2a_result = A2AResult(
+                        output=result,
+                        reasoning_summary=result.get("message", f"HITL {result.get('status', 'handled')}"),
+                        confidence=1.0,
+                    )
+                await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
+                return
+        # ── End HITL continuation path ───────────────────────────────────
+
+        result = await loop.run(task_id=task_id, params=params, memory=memory)
+
+        if result.get("__hitl__"):
+            await update_task_status(
+                redis, task_id, TaskStatus.INPUT_REQUIRED,
+                input_request=result.get("question", "Xác nhận thao tác?"),
+            )
+            return
 
         a2a_result = A2AResult(
             output=result.get("output", {}),
@@ -62,11 +107,12 @@ async def _process_bi_task(task_id: str, task: A2ATask, redis: aioredis.Redis) -
 @router.post("/tasks", response_model=TaskSubmitResponse, status_code=202)
 async def submit_task(body: TaskSubmitRequest, request: Request) -> TaskSubmitResponse:
     redis: aioredis.Redis = request.app.state.redis
+    memory = getattr(request.app.state, "memory", None)
     task = A2ATask(skill=body.skill, params=body.params)
     await store_task(redis, task)
 
     asyncio.create_task(
-        _process_bi_task(task.task_id, task, redis),
+        _process_bi_task(task.task_id, task, redis, memory=memory),
         name=f"bi_task_{task.task_id}",
     )
 

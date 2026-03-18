@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -38,7 +39,12 @@ class TaskSubmitResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def _process_order_task(task_id: str, task: A2ATask, redis: aioredis.Redis) -> None:
+async def _process_order_task(
+    task_id: str,
+    task: A2ATask,
+    redis: aioredis.Redis,
+    memory: Any = None,
+) -> None:
     """
     Execute the Order Agent graph for this task in the background.
 
@@ -51,7 +57,7 @@ async def _process_order_task(task_id: str, task: A2ATask, redis: aioredis.Redis
     await update_task_status(redis, task_id, TaskStatus.WORKING)
 
     try:
-        from order_agent.graph import run_order_graph  # noqa: PLC0415
+        from order_agent.core.react_loop import MemoryAwareReActLoop  # noqa: PLC0415
 
         params = task.params
         continuation = params.get("continuation")
@@ -97,7 +103,62 @@ async def _process_order_task(task_id: str, task: A2ATask, redis: aioredis.Redis
                 },
             }
 
-        result = await run_order_graph(task_id=task_id, params=params, redis=redis)
+        loop = MemoryAwareReActLoop(skill="create_order")
+
+        # ── HITL continuation path ────────────────────────────────────────
+        # If the original task had a pending HITL gate, route to resume_after_hitl()
+        # instead of the normal order graph checkpoint resume.
+        if continuation and continuation.get("task_id"):
+            original_task_id = continuation["task_id"]
+            hitl_raw = await redis.get(f"hitl:{original_task_id}")
+            if hitl_raw:
+                user_input = continuation.get("user_input", "")
+                tool_registry_url = os.environ.get("TOOL_REGISTRY_URL", "")
+                result = await loop.resume_after_hitl(
+                    user_response=user_input,
+                    task_id=original_task_id,
+                    redis=redis,
+                    tool_registry_url=tool_registry_url,
+                )
+
+                if result.get("__scope_change__"):
+                    # Signal scope change back to Orchestrator
+                    a2a_result = A2AResult(
+                        output={"__scope_change__": True, "new_request": result.get("new_request", "")},
+                        reasoning_summary="Người dùng thay đổi yêu cầu sang chủ đề mới",
+                        confidence=1.0,
+                    )
+                    await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
+                elif result.get("status") == "modify":
+                    # Re-run graph with updated user feedback injected
+                    modified_params = {**params, "message": result.get("user_feedback", user_input)}
+                    result2 = await loop.run(task_id=task_id, params=modified_params, redis=redis, memory=memory)
+                    if result2.get("status") == "input-required":
+                        await update_task_status(
+                            redis, task_id, TaskStatus.INPUT_REQUIRED,
+                            input_request=result2.get("input_request", ""),
+                        )
+                    else:
+                        a2a_result = A2AResult(
+                            output=result2.get("output", {}),
+                            reasoning_summary=result2.get("reasoning_summary", "Order re-processed after HITL modify"),
+                            confidence=result2.get("confidence"),
+                            tool_calls=result2.get("tool_calls", []),
+                        )
+                        await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
+                else:
+                    # confirm, cancel, or error — all terminal
+                    outcome = result.get("status", "cancelled")
+                    a2a_result = A2AResult(
+                        output=result,
+                        reasoning_summary=result.get("message", f"HITL {outcome}"),
+                        confidence=1.0,
+                    )
+                    await update_task_status(redis, task_id, TaskStatus.COMPLETED, result=a2a_result)
+                return
+        # ── End HITL continuation path ───────────────────────────────────
+
+        result = await loop.run(task_id=task_id, params=params, redis=redis, memory=memory)
 
         if result.get("status") == "input-required":
             await update_task_status(
@@ -105,6 +166,14 @@ async def _process_order_task(task_id: str, task: A2ATask, redis: aioredis.Redis
                 task_id,
                 TaskStatus.INPUT_REQUIRED,
                 input_request=result.get("input_request", ""),
+            )
+        elif result.get("__hitl__"):
+            # HITL gate triggered by graph (e.g., via _execute_tool signal)
+            await update_task_status(
+                redis,
+                task_id,
+                TaskStatus.INPUT_REQUIRED,
+                input_request=result.get("question", "Xác nhận thao tác?"),
             )
         else:
             a2a_result = A2AResult(
@@ -137,12 +206,13 @@ async def _process_order_task(task_id: str, task: A2ATask, redis: aioredis.Redis
 async def submit_task(body: TaskSubmitRequest, request: Request) -> TaskSubmitResponse:
     """Accept A2A task and return task_id immediately (< 200ms)."""
     redis: aioredis.Redis = request.app.state.redis
+    memory = getattr(request.app.state, "memory", None)
     task = A2ATask(skill=body.skill, params=body.params)
     await store_task(redis, task)
 
     # Kick off background processing — do not await
     asyncio.create_task(
-        _process_order_task(task.task_id, task, redis),
+        _process_order_task(task.task_id, task, redis, memory=memory),
         name=f"order_task_{task.task_id}",
     )
 

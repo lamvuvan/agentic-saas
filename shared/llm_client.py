@@ -19,6 +19,10 @@ _MODEL_ROUTING: dict[str, str] = {
     "nl2sql": "smart",
     "response_format": "fast",
     "product_rerank": "fast",
+    "extract_learnings": "fast",  # GPT-4o-mini for post-task learning extraction
+    "extract_routing_learnings": "fast",  # GPT-4o-mini for post-plan routing insight extraction
+    "confirm_message": "fast",            # GPT-4o-mini for HITL confirmation message generation
+    "classify_hitl_response": "fast",     # GPT-4o-mini for HITL user response classification
 }
 
 # Confidence threshold — below this, fast tasks escalate to smart model

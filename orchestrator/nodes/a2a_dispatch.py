@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from shared.a2a.models import ExecutionPlan, PlanStep, TaskStatus
+from shared.a2a.models import ExecutionPlan, TaskStatus
+
+if TYPE_CHECKING:
+    from orchestrator.core.plan_service import PlanService
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +29,38 @@ def _resolve_agent_url(agent_name: str, registry: Any) -> str | None:
     return _FALLBACK_AGENT_URLS.get(agent_name)
 
 
+def _extract_result_summary(task: Any) -> str | None:
+    """Best-effort: extract a short result summary from A2ATask for plan_sub_goals.result_summary."""
+    if task.result is None:
+        return None
+    try:
+        output = task.result.output
+        if isinstance(output, str):
+            return output[:200]
+        if isinstance(output, dict):
+            # Try common keys
+            for key in ("message", "summary", "formatted_summary", "reply"):
+                if key in output:
+                    return str(output[key])[:200]
+            return str(output)[:200]
+    except Exception:
+        pass
+    return None
+
+
 async def dispatch_plan(
     plan: ExecutionPlan,
     trace_id: str = "",
     registry: Any = None,
+    plan_service: "PlanService | None" = None,
+    plan_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """
     Execute plan steps sequentially (MVP: single step only).
+
+    When plan_service + plan_id are provided:
+    - Calls plan_service.link_task() immediately after each A2A submit (sets sub_goal status=running)
+    - Calls plan_service.sync_from_task() after polling completes (syncs final status + result_summary)
 
     Returns:
         (agent_results, needs_replan)
@@ -44,7 +72,7 @@ async def dispatch_plan(
     agent_results: list[dict[str, Any]] = []
     needs_replan = False
 
-    for step in plan.steps:
+    for sequence, step in enumerate(plan.steps, start=1):
         if step.status != "pending":
             continue
 
@@ -55,6 +83,12 @@ async def dispatch_plan(
                 extra={"agent": step.agent, "plan_id": plan.plan_id},
             )
             needs_replan = True
+            # Sync sub_goal to failed if we have a plan_service
+            if plan_service and plan_id:
+                try:
+                    await plan_service.sync_from_task("", "failed")
+                except Exception:
+                    pass
             break
 
         logger.info(
@@ -79,7 +113,30 @@ async def dispatch_plan(
             step.task_id = task_id
             step.status = "running"
 
+            # Link A2A task to sub_goal immediately after submit (status → running)
+            if plan_service and plan_id:
+                try:
+                    await plan_service.link_task(plan_id, sequence, task_id)
+                except Exception as exc:
+                    logger.warning(
+                        "plan_link_task_failed",
+                        extra={"task_id": task_id, "error": str(exc)},
+                    )
+
             task = await poll_for_result(agent_url=agent_url, task_id=task_id)
+
+            # Sync final status + result_summary to sub_goal
+            if plan_service and plan_id:
+                try:
+                    result_summary = _extract_result_summary(task)
+                    await plan_service.sync_from_task(
+                        task_id, task.status.value, result_summary
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "plan_sync_from_task_failed",
+                        extra={"task_id": task_id, "error": str(exc)},
+                    )
 
             if task.status == TaskStatus.TIMEOUT:
                 logger.warning(

@@ -8,16 +8,25 @@
 
 ```
 UserSession ──────── has many ──────── ConversationTurn
-     │
-     └── has one active ─────────────── A2ATask
+     │                    │
+     └── has one active ──┤──────────── A2ATask
+     │                    │                 │
+     └── has many ─────── DisplayPlan       │
+                               │            │
+                        PlanSubGoal ────────┘ (a2a_task_id FK)
                                             │
                           ┌─────────────────┴──────────────────┐
                     (Order Agent)                         (BI Agent)
                        OrderDraft                       BIQueryResult
-                          │
-                    OrderEntities
-                          │
-                     ProductMatch (1..N)
+                          │                                      │
+                    OrderEntities                                 │
+                          │                                      │
+                     ProductMatch (1..N)                         │
+                                                                 │
+AgentMemory ─────────────── scoped per (agent_name, tenant_id) ─┘
+AgentTaskHistory ─────────── links to DisplayPlan via plan_id FK
+
+OrchestratorMemory ─── scoped per tenant_id ─── used by Plan node (routing context)
 ```
 
 ---
@@ -136,6 +145,12 @@ An asynchronous work unit managed by a Domain Agent's task store.
 
 **`TaskStatus` enum**: `submitted` → `working` → `completed` | `failed` | `timeout` | `input-required`
 
+`input-required` is used for two distinct pause scenarios:
+1. **Order confirmation**: Order Agent preview waiting for staff confirmation (existing multi-turn flow).
+2. **HITL mutating tool gate**: Domain Agent detected a `requires_confirmation: true` tool and is waiting for explicit staff approval before executing the write operation.
+
+In both cases, `input_request` contains the Vietnamese message to show the user.
+
 **Storage**: Redis hash `a2a:task:{task_id}`, TTL = 1 hour after terminal status.
 
 **State transitions**:
@@ -143,7 +158,10 @@ An asynchronous work unit managed by a Domain Agent's task store.
 submitted → working → completed
                    ↘ failed
                    ↘ timeout
-                   ↘ input-required → working (on resume)
+                   ↘ input-required (order preview or HITL gate)
+                          ↓ user confirms/modifies/cancels
+                        working → completed
+                               ↘ failed (user cancelled)
 ```
 
 ---
@@ -242,6 +260,67 @@ A matched and confirmed order item ready for submission.
 
 ---
 
+### DisplayPlan
+
+User-visible representation of an Orchestrator plan, persisted to PostgreSQL. Decoupled from the internal routing plan (which lives in LangGraph state / Redis).
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | `UUID` | PK, required | Unique plan identifier |
+| `session_id` | `str` (max 128) | FK → UserSession, required | Parent session |
+| `tenant_id` | `str` (max 128) | required | Tenant identifier |
+| `user_message` | `str` | required | Original user message that triggered this plan |
+| `goal` | `str` | required | Business-friendly goal in Vietnamese (e.g., "Xem doanh thu hôm nay và tạo đơn cho khách Lâm") |
+| `status` | `"pending" \| "running" \| "completed" \| "failed"` | required, default `pending` | Plan lifecycle status |
+| `created_at` | `datetime` (UTC) | required | Plan creation timestamp |
+| `updated_at` | `datetime` (UTC) | required | Last status change timestamp |
+
+**Storage**: PostgreSQL table `plans`. Indexes: `idx_plans_session(session_id, tenant_id)`.
+
+**State transitions**:
+```
+pending → running (plan_service.create_plan sets status=running immediately)
+       → completed (all PlanSubGoals reached terminal state successfully)
+       → failed (any PlanSubGoal failed and no replan possible)
+```
+
+---
+
+### PlanSubGoal
+
+A single step within a DisplayPlan. Maps 1-to-1 with an A2A task once dispatched.
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | `UUID` | PK, required | Unique sub-goal identifier |
+| `plan_id` | `UUID` | FK → DisplayPlan ON DELETE CASCADE, required | Parent plan |
+| `sequence` | `int` | required | Execution order (1-indexed) |
+| `title` | `str` | required | Business-friendly step description in Vietnamese (e.g., "Truy vấn doanh thu tháng hiện tại") — NEVER contains agent/tool names |
+| `agent_name` | `str` (max 100) | required | Internal agent identifier used for routing/debug (e.g., `"bi-agent"`) — NOT shown to end users |
+| `agent_label` | `str` (max 100) | required | User-visible display name (e.g., `"Báo Cáo & Phân Tích"`) |
+| `a2a_task_id` | `str` (max 128) | optional, nullable | A2A task ID once dispatched; NULL until link_task() is called |
+| `status` | `"pending" \| "running" \| "completed" \| "failed"` | required, default `pending` | Sub-goal execution status |
+| `result_summary` | `str \| null` | optional | Short human-readable result (e.g., "Doanh thu hôm nay: 8.4 triệu đồng") |
+| `started_at` | `datetime (UTC) \| null` | optional | Set when link_task() is called |
+| `completed_at` | `datetime (UTC) \| null` | optional | Set when terminal status is reached |
+
+**Storage**: PostgreSQL table `plan_sub_goals`. Indexes: `idx_sub_goals_plan(plan_id, sequence)`, `idx_sub_goals_task(a2a_task_id)` for reverse lookup in `sync_from_task()`.
+
+**Agent label mapping** (baked into plan_v1.md prompt):
+| `agent_name` | `agent_label` |
+|---|---|
+| `order-agent` | `"Tạo & Quản Lý Đơn Hàng"` |
+| `bi-agent` | `"Báo Cáo & Phân Tích"` |
+
+**State transitions**:
+```
+pending → running  (link_task() called — A2A task dispatched)
+       → completed (sync_from_task() receives "completed" status)
+       → failed    (sync_from_task() receives "failed" status)
+```
+
+---
+
 ### BIQueryResult
 
 Output of the BI Agent's query pipeline.
@@ -293,6 +372,106 @@ active → replanning (step failed, replan_count < max_replans)
 
 ---
 
+---
+
+### AgentMemory
+
+Persistent semantic fact accumulated by a Domain Agent over time. Upserted after each completed task via learning extraction.
+
+**Storage**: PostgreSQL `agent_memory` table (permanent, no TTL)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| id | UUID | PK | Auto-generated |
+| agent_name | VARCHAR(100) | ✓ | `"order-agent"` or `"bi-agent"` |
+| tenant_id | VARCHAR(128) | ✓ | Tenant scope for multi-tenancy |
+| memory_type | VARCHAR(50) | ✓ | Order: `product_alias` \| `customer_pref` \| `order_pattern` \| `vn_expression`; BI: `sql_pattern` \| `glossary_fix` \| `column_alias` \| `query_template` |
+| key | TEXT | ✓ | Lookup key (alias text, customer_id, query intent, business term) |
+| content | TEXT | ✓ | Fact content (the resolved value, preference, pattern, etc.) |
+| confidence | FLOAT | ✓ | 0.0–1.0; default 0.8; UPSERT takes `GREATEST(existing, new)` |
+| usage_count | INT | ✓ | Incremented each time the fact is retrieved; default 0 |
+| last_used_at | TIMESTAMPTZ | | Updated on each retrieval |
+| created_at | TIMESTAMPTZ | ✓ | Auto-set on insert |
+| updated_at | TIMESTAMPTZ | ✓ | Auto-updated on upsert |
+
+**Unique constraint**: `(agent_name, tenant_id, memory_type, key)` — enables idempotent upsert.
+
+**Retrieval ordering**: `confidence DESC, usage_count DESC, last_used_at DESC` — most reliable and frequently used facts surface first.
+
+**Examples**:
+
+| agent_name | memory_type | key | content |
+|---|---|---|---|
+| order-agent | product_alias | "ba đen" | "cafe đen đá size L" |
+| order-agent | customer_pref | "cust_123" | "Thường order trứng lộn x2 vào buổi sáng" |
+| order-agent | vn_expression | "thêm vào" | "Intent: add_to_existing_order" |
+| bi-agent | sql_pattern | "doanh thu theo ngày" | "SELECT DATE(created_at), SUM(net_revenue) FROM orders GROUP BY 1" |
+| bi-agent | glossary_fix | "doanh thu" | "= cột net_revenue (không phải gross_amount)" |
+
+---
+
+### AgentTaskHistory
+
+Episodic record of a completed A2A task. Used to surface similar past tasks for the next run.
+
+**Storage**: PostgreSQL `agent_task_history` table (permanent, no TTL)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| id | UUID | PK | Auto-generated |
+| agent_name | VARCHAR(100) | ✓ | `"order-agent"` or `"bi-agent"` |
+| tenant_id | VARCHAR(128) | ✓ | Tenant scope |
+| plan_id | UUID | FK → plans.id | Links to the Orchestrator plan that triggered this task |
+| skill | VARCHAR(100) | ✓ | `"create_order"` \| `"bi_query"` |
+| input_summary | TEXT | ✓ | Sanitised summary of task input — **MUST NOT contain raw PII** (customer names, phone numbers) |
+| outcome | VARCHAR(20) | ✓ | `"success"` \| `"failed"` \| `"cancelled"` |
+| key_decisions | JSONB | | Dict of `{tool_name: arguments}` — the tool calls agent made during task |
+| learnings | TEXT | | JSON array of facts extracted by GPT-4o-mini after task |
+| duration_ms | INT | | Task wall-clock duration |
+| created_at | TIMESTAMPTZ | ✓ | Auto-set on insert |
+
+**PII constraint**: `input_summary` stores a sanitised representation (e.g. `"order for customer_id=cust_123: 2x product_id=P42"`) — never the raw message text.
+
+**Retrieval**: `find_similar_tasks()` queries WHERE `outcome='success'` AND `input_summary ILIKE '%{keyword}%'` ORDER BY `created_at DESC`.
+
+---
+
+### OrchestratorMemory
+
+Persistent routing fact accumulated by the Orchestrator at the meta-level. Distinct from `AgentMemory` which stores domain facts — this stores routing strategies, plan templates, and user patterns.
+
+**Storage**: PostgreSQL `orchestrator_memory` table (migration 003, permanent, no TTL)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| id | UUID | PK | Auto-generated |
+| tenant_id | VARCHAR(128) | ✓ | Tenant scope |
+| memory_type | VARCHAR(50) | ✓ | `"routing_pattern"` \| `"plan_template"` \| `"user_pattern"` \| `"routing_fix"` |
+| key | TEXT | ✓ | Lookup key (intent class, request pattern, behavior pattern, failure pattern) |
+| content | TEXT | ✓ | Routing insight (agent combo + rationale, plan structure, correction, etc.) |
+| confidence | FLOAT | ✓ | 0.0–1.0; default 0.8; UPSERT takes `GREATEST(existing, new)` |
+| usage_count | INT | ✓ | Incremented on retrieval; default 0 |
+| last_used_at | TIMESTAMPTZ | | Updated on each retrieval |
+| created_at | TIMESTAMPTZ | ✓ | Auto-set on insert |
+| updated_at | TIMESTAMPTZ | ✓ | Auto-updated on upsert |
+
+**Unique constraint**: `(tenant_id, memory_type, key)` — enables idempotent upsert.
+
+**Retrieval ordering**: `confidence DESC, usage_count DESC` — most reliable patterns surface first.
+
+**Examples**:
+
+| memory_type | key | content |
+|---|---|---|
+| routing_pattern | "order+bi_combined" | "Request vừa tạo đơn vừa xem BI → chạy BI trước rồi mới Order" |
+| plan_template | "daily_revenue_check" | "sub_goals: [bi-agent: doanh thu theo ngày]" |
+| user_pattern | "add_after_confirm" | "User thường thêm món sau khi xem preview → nên confirm lại sau khi thêm" |
+| routing_fix | "order_agent_timeout" | "Order Agent timeout khi >5 món → split thành 2 request" |
+
+**Episodic complement**: `find_similar_plans()` queries the existing `plans` + `plan_sub_goals` tables directly — no separate episodic table needed.
+
+---
+
 ## PII Identification (Constitution §Data & Compliance)
 
 | Entity | PII Fields | Handling |
@@ -301,5 +480,10 @@ active → replanning (step failed, replan_count < max_replans)
 | OrderDraft | `customer_name`, `customer_id`, `items` | Stored in LangGraph checkpoint (Redis, 1 hour TTL); never written to analytics DB |
 | A2ATask | `params` (may contain customer info) | 1 hour TTL; not exported to analytics |
 | ExecutionPlan | `goal`, `steps.params` | 1 hour TTL; audit logs retained 90 days per Constitution §Data |
+| DisplayPlan | `user_message`, `goal` | PostgreSQL; does not store PII beyond original message — apply 90-day retention per Constitution default |
+| PlanSubGoal | `title`, `result_summary` | PostgreSQL; may contain derived business data (revenue figures) — no direct PII; 90-day retention |
+| AgentMemory | `key`, `content` (may contain customer_id but not raw name) | PostgreSQL permanent; `customer_pref` entries keyed by `customer_id` (opaque ID), not name — no direct PII |
+| AgentTaskHistory | `input_summary` | PostgreSQL permanent; sanitised summary — raw PII MUST NOT be stored; 90-day retention policy applies |
+| OrchestratorMemory | `key`, `content` (routing strategies, never customer data) | PostgreSQL permanent; stores meta-level routing patterns only — no customer PII by design |
 
 **Regulation**: No specific regulation identified for MVP (internal tool). Apply 90-day audit log retention per Constitution default.

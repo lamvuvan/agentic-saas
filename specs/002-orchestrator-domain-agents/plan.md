@@ -38,6 +38,7 @@ Build a three-service multi-agent system (Orchestrator :8000, Order Agent :8002,
 | **V. Resilience** — timeouts, idempotent A2A, plan re-entrant | ✅ PASS | A2A timeout 30s; draft keyed by `task_id`; max_replans=3 |
 | **VI. Multi-tenancy** | ⚠️ DEFERRED | Single-tenant MVP; `tenant_id` propagated via ContextVar but partition enforcement is v2 backlog |
 | **VII. Simplicity** — no premature abstraction | ✅ PASS | Direct async functions used instead of full LangGraph StateGraph where equivalent |
+| **HITL for mutating tools** — write operations require human approval | ✅ PASS | `requires_confirmation: true` in tools.yaml gates all mutating tools; ReAct loop pauses before any data-modifying tool call |
 
 **Complexity Tracking**:
 
@@ -67,24 +68,35 @@ orchestrator/                   # :8000 — Orchestrator Agent
 ├── graph.py                    # invoke_chat(): classify → plan → dispatch → aggregate
 ├── agent_registry.py           # AgentRegistry: fetch /.well-known/agent.json from seed URLs, background refresh 60s, build_prompt_context(), get_a2a_endpoint()
 ├── session.py                  # Redis-backed session: 30-min TTL, last-20-turns, get_last_n(3)
-├── models.py                   # OrchestratorState, IntentResult, ChatRequest, ChatResponse
+├── models.py                   # OrchestratorState, IntentResult, ChatRequest, ChatResponse, DisplayPlan, PlanSubGoal
 ├── a2a_client.py               # submit_to_agent(), poll_for_result() — wraps shared/a2a/client.py
+├── core/
+│   ├── __init__.py
+│   ├── plan_service.py         # PlanService: create_plan, link_task, sync_from_task, _maybe_complete_plan, get_plan
+│   └── orchestrator_memory.py  # OrchestratorMemoryService: retrieve_patterns, store_pattern, find_similar_plans, extract_and_store
 ├── nodes/
 │   ├── intent_classify.py      # GPT-4o-mini, escalates to GPT-4o at confidence < 0.72
-│   ├── plan.py                 # GPT-4o, injects AgentRegistry.build_prompt_context() into prompt, outputs ExecutionPlan, persists plan:{plan_id} to Redis
+│   ├── plan.py                 # GPT-4o, injects {agent_manifest}+{routing_memory}+{similar_plans}, fire-and-forget extract_and_store
 │   ├── a2a_dispatch.py         # Resolves agent URL via AgentRegistry (fallback: env vars), submits A2A tasks, polls, handles timeout/replan
 │   └── aggregate.py            # Synthesises Domain Agent results → Vietnamese reply
+├── migrations/
+│   ├── 001_plans.sql           # plans + plan_sub_goals tables
+│   ├── 002_agent_memory.sql    # agent_memory + agent_task_history (run by Order/BI Agent lifespan)
+│   └── 003_orchestrator_memory.sql  # orchestrator_memory table + indexes
 └── prompts/
     ├── intent_classify_v1.md   # System prompt + 8 few-shot examples
-    └── plan_v1.md              # Planning prompt with {agent_manifest} placeholder + 2 few-shot examples
+    └── plan_v1.md              # Planning prompt with {agent_manifest}, {routing_memory}, {similar_plans} + 2 few-shot examples
 
 order_agent/                    # :8002 — Order Domain Agent
-├── main.py                     # FastAPI app, A2A router, /.well-known/agent.json, lifespan
-├── a2a_server.py               # POST /a2a/tasks (202), GET /a2a/tasks/{id}, continuation resume
+├── main.py                     # FastAPI app, A2A router, /.well-known/agent.json, lifespan; asyncpg pool + MemoryService init
+├── a2a_server.py               # POST /a2a/tasks (202), GET /a2a/tasks/{id}, continuation resume; uses MemoryAwareReActLoop
 ├── graph.py                    # run_order_graph(): extract → match → customer → preview → confirm → submit
 ├── product_matcher.py          # FAISS IndexFlatIP, atomic refresh, threshold routing (0.85/0.65)
 ├── vn_utils.py                 # normalize_text, strip_honorifics, words_to_numbers, extract_product_note
 ├── models.py                   # OrderAgentState, OrderEntities, ProductMatch, OrderDraft, ResolvedOrderItem
+├── core/
+│   ├── __init__.py
+│   └── react_loop.py           # MemoryAwareReActLoop: retrieve → inject context → run graph → extract learnings; _execute_tool() HITL gate; resume_after_hitl()
 ├── nodes/
 │   ├── extract_entities.py     # GPT-4o-mini Structured Output → OrderEntities
 │   ├── match_products.py       # FAISS search + LLM rerank for 0.65–0.84 range
@@ -96,10 +108,13 @@ order_agent/                    # :8002 — Order Domain Agent
     └── entity_extract_v1.md    # 12 Vietnamese few-shot examples
 
 bi_agent/                       # :8003 — BI Domain Agent
-├── main.py                     # FastAPI app, A2A router, /.well-known/agent.json, lifespan
-├── a2a_server.py               # POST /a2a/tasks (202), GET /a2a/tasks/{id}
+├── main.py                     # FastAPI app, A2A router, /.well-known/agent.json, lifespan; asyncpg pool + MemoryService init
+├── a2a_server.py               # POST /a2a/tasks (202), GET /a2a/tasks/{id}; uses MemoryAwareReActLoop
 ├── graph.py                    # run_bi_graph(): schema_explorer → nl2sql → safety_check → execute → format
 ├── models.py                   # BIAgentState, BIQueryResult
+├── core/
+│   ├── __init__.py
+│   └── react_loop.py           # MemoryAwareReActLoop (BI variant): inject retrieved sql_pattern/glossary_fix memories; _execute_tool() HITL gate for BI write tools
 ├── nodes/
 │   ├── schema_explorer.py      # Load config/bi_schema.yaml, cache schema context string
 │   ├── nl2sql.py               # GPT-4o, temperature=0, {{SCHEMA_CONTEXT}} injection
@@ -117,11 +132,12 @@ shared/                         # Cross-service shared libraries
 │   ├── client.py               # submit_task(), poll_task(), A2ATimeoutError
 │   └── server.py               # store_task(), get_task(), update_task_status() — Redis a2a:task:{id}
 ├── llm_client.py               # select_model(task_type), chat_completion_async(), ESCALATION_THRESHOLD=0.72
+├── memory_service.py           # MemoryService: retrieve, store, find_similar_tasks, record_task, _bump_usage
 ├── auth_context.py             # ContextVar token/tenant_id, AuthForwardMiddleware (from feature 001)
 └── tool_registry_client.py     # ToolRegistryClient (from feature 001)
 
 config/
-├── tools.yaml                  # Tool Registry definitions (customer, order, bi namespaces)
+├── tools.yaml                  # Tool Registry definitions (customer, order, bi namespaces); requires_confirmation + impact_template on mutating tools
 └── bi_schema.yaml              # Table allowlist + business glossary for NL2SQL
 
 tests/002-orchestrator-domain-agents/
@@ -130,17 +146,25 @@ tests/002-orchestrator-domain-agents/
 │   ├── test_chat_contract.py   # POST /chat schema, 422 validation, token not in response
 │   ├── test_a2a_contract.py    # POST /a2a/tasks 202, GET status enum, 404, token not echoed
 │   ├── test_order_agent_contract.py  # Output schema: output+reasoning_summary, input_request
-│   └── test_bi_agent_contract.py     # BI output schema, rejected structure, token not in result
+│   ├── test_bi_agent_contract.py     # BI output schema, rejected structure, token not in result
+│   └── test_plan_contract.py         # GET /plans/{session_id}/current, GET /plans/{plan_id} schema
 ├── integration/
 │   ├── test_token_forwarding.py      # Authorization header propagation, token never in task record
 │   ├── test_a2a_lifecycle.py         # submitted→terminal, UUID v4, timestamps
 │   ├── test_intent_routing.py        # order/bi/chitchat routing, session_id preservation
 │   ├── test_order_flow.py            # Single/multi-item order, continuation resume
-│   └── test_bi_query.py             # Revenue/customer queries, destructive query rejected
+│   ├── test_bi_query.py             # Revenue/customer queries, destructive query rejected
+│   ├── test_plan_visibility.py       # Sub-goal status sync, plan completed when all sub_goals done
+│   ├── test_agent_memory.py         # MemoryService store/retrieve/find_similar/record_task, degradation
+│   ├── test_orchestrator_memory.py  # OrchestratorMemoryService retrieve/store/find_similar_plans, degradation
+│   └── test_hitl_flow.py            # HITL pause→confirm/modify/cancel/scope_change; read-only tools bypass
 └── unit/
     ├── test_vn_utils.py             # 50 cases: normalize, strip_honorifics, words_to_numbers
     ├── test_product_matcher.py      # Index build, threshold routing, atomic refresh
-    └── test_nl2sql.py               # Safety check 12 cases, inject_limit 5 cases
+    ├── test_nl2sql.py               # Safety check 12 cases, inject_limit 5 cases
+    ├── test_memory_service.py       # MemoryService SQL ordering, UPSERT, PII, _store_learnings
+    ├── test_orchestrator_memory_service.py  # OrchestratorMemoryService SQL, GREATEST, extract_and_store
+    └── test_hitl_unit.py            # _classify_hitl_response, _generate_confirm_message, requires_confirmation routing
 
 evals/
 ├── runner.py                   # CLI: python -m evals.runner --suite X --base-url Y
@@ -168,6 +192,73 @@ Each Domain Agent already publishes `/.well-known/agent.json`. Rather than hardc
 **Adding a new agent**: add its base URL to `AGENT_SEED_URLS` and restart the Orchestrator — the new agent is discovered within the next refresh cycle (≤ 60s from next startup).
 
 **Files**: `orchestrator/agent_registry.py` (new), `orchestrator/main.py` (lifespan), `orchestrator/nodes/plan.py` (registry param), `orchestrator/nodes/a2a_dispatch.py` (_resolve_agent_url), `orchestrator/prompts/plan_v1.md` ({agent_manifest})
+
+### Plan Persistence & Display (PlanService)
+
+Every processed request generates a dual-layer plan in a single GPT-4o call:
+- **`display` layer**: Vietnamese business-friendly `goal` + `sub_goals` (each with `sequence`, `title`, `agent_name`, `agent_label`) — persisted to PostgreSQL via `PlanService.create_plan()`.
+- **`routing` layer**: internal technical steps (`agent`, `skill`, `params`, `depends_on`, `status`) — persisted to Redis as `plan:{plan_id}` (Constitution Principle V).
+
+`PlanService` at `orchestrator/core/plan_service.py`: `create_plan()` inserts `plans` row (`status=running`) + all `plan_sub_goals` in one operation; `link_task(plan_id, sequence, a2a_task_id)` is called after each `POST /a2a/tasks` 202; `sync_from_task(a2a_task_id, status, result_summary)` updates sub_goal status on each polling iteration and calls `_maybe_complete_plan()`; `get_plan(plan_id)` returns plan + sub_goals for API responses.
+
+**New endpoints**: `GET /plans/{session_id}/current` (latest plan for session) and `GET /plans/{plan_id}` (plan detail). `agent_label` used in all user-visible responses; `agent_name` never exposed to end users.
+
+**Migration**: `orchestrator/migrations/001_plans.sql` (idempotent `CREATE TABLE IF NOT EXISTS`).
+
+**Files**: `orchestrator/core/plan_service.py` (new), `orchestrator/migrations/001_plans.sql` (new), `orchestrator/nodes/plan.py` (MODIFIED: dual-layer parse, create_plan call), `orchestrator/nodes/a2a_dispatch.py` (MODIFIED: link_task + sync_from_task), `orchestrator/main.py` (MODIFIED: asyncpg pool, GET /plans/* endpoints, pass plan_service to invoke_chat)
+
+### Domain Agent Memory (MemoryService)
+
+Domain Agents learn domain facts at task completion via a 3-layer memory architecture:
+- **Layer 1 (Working)**: LangGraph state + Redis checkpoint — per-task context, 1-hour TTL.
+- **Layer 2 (Semantic)**: `agent_memory` table — persistent facts per `(agent_name, tenant_id)`: `product_alias`, `customer_pref`, `order_pattern`, `vn_expression` (Order Agent); `sql_pattern`, `glossary_fix`, `column_alias`, `query_template` (BI Agent).
+- **Layer 3 (Episodic)**: `agent_task_history` table — per-task record with `input_summary` (no raw PII), `outcome`, `key_decisions`, `learnings`, `duration_ms`.
+
+`MemoryService` at `shared/memory_service.py`: `retrieve(tenant_id, query_context, limit=5)`, `store(tenant_id, memory_type, key, content, confidence=0.8)` with GREATEST semantics, `find_similar_tasks(tenant_id, skill, input_summary, limit=3)`, `record_task(...)`. Shared by both Order Agent and BI Agent.
+
+`MemoryAwareReActLoop` in `order_agent/core/react_loop.py` and `bi_agent/core/react_loop.py`: retrieves memories before graph, injects `## Kiến Thức Tích Lũy` + `## Bài Học Từ Task Tương Tự` blocks into system prompt, calls `_extract_learnings` (GPT-4o-mini) + `_store_learnings` (best-effort) + `memory.record_task()` after graph.
+
+**Graceful degradation**: `POSTGRES_DSN` not set → `app.state.memory = None` → all DB calls silently skipped.
+
+**Migration**: `orchestrator/migrations/002_agent_memory.sql` (idempotent; FK `agent_task_history.plan_id → plans.id` — run after migration 001).
+
+### Orchestrator Memory (OrchestratorMemoryService)
+
+The Orchestrator learns at the meta-level — routing strategies, plan templates, user patterns — distinct from Domain Agents which learn domain facts.
+
+**Two layers**:
+- **Episodic**: reuses existing `plans` + `plan_sub_goals` tables. `find_similar_plans()` queries `plans WHERE status='completed' AND user_message ILIKE %pattern%`.
+- **Semantic**: `orchestrator_memory` table (migration 003). Types: `routing_pattern`, `plan_template`, `user_pattern`, `routing_fix`. GREATEST semantics on upsert.
+
+`OrchestratorMemoryService` at `orchestrator/core/orchestrator_memory.py`: `retrieve_patterns(tenant_id, intent_class, request_summary, limit=4)`, `store_pattern(tenant_id, memory_type, key, content, confidence=0.8)`, `find_similar_plans(tenant_id, user_message, limit=3)`, `extract_and_store(tenant_id, plan, sub_goals)` — best-effort GPT-4o-mini via `ROUTING_LEARNINGS_PROMPT`.
+
+Plan node injects `{routing_memory}` + `{similar_plans}` into GPT-4o system prompt. After plan stored: `asyncio.create_task(_fire_and_forget_extract(...))`.
+
+**Graceful degradation**: `POSTGRES_DSN` not set → `app.state.orchestrator_memory = None` → all calls silently skipped.
+
+**Migration**: `orchestrator/migrations/003_orchestrator_memory.sql` (idempotent).
+
+### HITL — Human-in-the-Loop Confirmation for Mutating Tools
+
+Tool definitions in `config/tools.yaml` are classified into two groups by `requires_confirmation` flag:
+- **`false` (default)**: read-only tools (`get_customers`, `get_products`, `bi__run_query`) — execute immediately, no pause.
+- **`true`**: mutating tools (`order__create_order`, `order__update_order`, `order__cancel_order`, `customer__create_customer`) — ReAct loop pauses, HITL confirmation required.
+
+`_execute_tool(tool_name, args, messages, plan_id)` in `MemoryAwareReActLoop`: checks `tool_def["requires_confirmation"]`; if True, calls `_generate_confirm_message()` (GPT-4o-mini with `CONFIRM_PROMPT` + `impact_template` from tools.yaml) and returns `{"__hitl__": True, "question": confirm_msg, "pending_tool": tool_name, "pending_args": args}`. A2A task transitions to `input_required`.
+
+`resume_after_hitl(user_response, pending_tool, pending_args, messages)`: classifies response into `confirm | modify | cancel | scope_change` using `_classify_hitl_response()` (GPT-4o-mini). Branch routing:
+- `confirm` → execute tool with original args, continue ReAct loop
+- `modify` → inject user response, loop re-reasons with updated context (no explicit replan)
+- `cancel` → inject cancellation message, loop re-reasons to acknowledge
+- `scope_change` → return `{"__scope_change__": True, "new_request": user_response}` to Orchestrator
+
+**No replan gate**: ReAct loop is the natural re-plan mechanism — injecting user feedback into `messages` causes the LLM to re-reason automatically.
+
+**New model routing**: `confirm_message` → `fast` (GPT-4o-mini), added to `shared/llm_client.py`.
+
+**New tools.yaml fields** (mutating tools): `requires_confirmation: true`, `impact_template: "..."` (describes the data change for confirmation message generation).
+
+**Files**: `order_agent/core/react_loop.py` (MODIFIED: _execute_tool, _generate_confirm_message, resume_after_hitl), `bi_agent/core/react_loop.py` (same pattern), `config/tools.yaml` (MODIFIED: add requires_confirmation + impact_template), `shared/llm_client.py` (MODIFIED: confirm_message route)
 
 ### Voice: Out of Scope
 Voice input (US6, FR-007) is **removed from this plan**. The `/chat` endpoint accepts text only. If callers need voice-to-text, they perform STT client-side before calling the API. This eliminates the `faster-whisper` dependency, the `/voice` endpoint, and the `orchestrator/stt.py` module.
@@ -202,7 +293,7 @@ Redis key `session:{session_id}`, TTL 1800s (30 min). Stores last 20 turns; inje
 
 ## Implementation Phases
 
-See [tasks.md](tasks.md) for the full 73-task breakdown across 9 phases:
+See [tasks.md](tasks.md) for the full task breakdown:
 
 | Phase | Scope | Key deliverable |
 |---|---|---|
@@ -210,13 +301,17 @@ See [tasks.md](tasks.md) for the full 73-task breakdown across 9 phases:
 | 2 — Foundational | shared/a2a/, shared/llm_client.py, A2A contract tests | Shared libs + contract tests pass |
 | 3 — A2A Protocol (US5) | A2A server/client, task lifecycle, token forwarding | A2A E2E: submitted→working→completed |
 | 4 — Intent Routing (US1) | Orchestrator graph, intent_classify, plan, dispatch, aggregate; **AgentRegistry + dynamic plan prompt** | classify 20 inputs ≥ 90%; new agent appears in prompt ≤ 60s |
+| 4b — Plan Visibility (US7) | PlanService, migration 001, GET /plans/* endpoints, sub-goal sync | Plan persisted ≤ 200ms; sub-goals sync with A2A status |
 | 5 — Order Creation (US2) | Order Agent full pipeline, FAISS, VN utils, multi-turn confirm | E2E order ≥ 85% on 20 inputs |
 | 6 — BI Queries (US3) | BI Agent: NL2SQL, safety, execute, format | BI correctness ≥ 80% on 20 queries |
 | 7 — Multi-Turn State (US4) | session.py, LangGraph checkpointer, continuation resume | 3-turn order conversation preserves state |
+| 7b — Domain Agent Memory (US8) | migration 002, MemoryService, MemoryAwareReActLoop (Order+BI), learning extraction | alias resolved from memory; learning extracted ≤ 2s post-task |
 | 8 — ~~Voice~~ (removed) | — | — |
+| 8b — Orchestrator Memory (US9) | migration 003, OrchestratorMemoryService, Plan node memory injection, routing learnings extraction | routing_pattern in system prompt ≤ next request; extraction ≤ 2s post-plan |
+| 8c — HITL (US10) | _execute_tool() HITL gate, _generate_confirm_message, resume_after_hitl (4 branches), tools.yaml requires_confirmation + impact_template | mutating tool never executes without prior user confirmation in 100% of test runs |
 | 9 — Polish | Eval runner + 4 YAML suites, structured logging, CLAUDE.md update | CI eval pipeline; 60+ golden test cases |
 
-## Success Criteria (Voice Removed)
+## Success Criteria
 
 | # | Criterion | Target | Measured by |
 |---|---|---|---|
@@ -231,3 +326,12 @@ See [tasks.md](tasks.md) for the full 73-task breakdown across 9 phases:
 | SC-010 | Zero Bearer token leaks | 100% | Code review + log audit |
 | SC-011 | A2A lifecycle correctness | 100% | Automated test suite |
 | SC-012 | Live demo (5 scenarios, 0 unhandled errors) | 0 crash | Demo video |
+| SC-013 | Plan persisted ≤ 200ms after Plan node completes | 100% | Integration tests |
+| SC-014 | Sub-goal status syncs with A2A task status on all polling requests | 100% | Integration tests |
+| SC-015 | Alias resolved from memory without user confirmation (2nd request) | 100% | Integration tests |
+| SC-016 | Domain Agent learning extraction ≤ 2s post-task, no latency regression | 100% | Integration tests |
+| SC-017 | Zero PII in `agent_task_history.input_summary` | 100% | Unit tests |
+| SC-018 | Orchestrator routing insight extraction ≤ 2s post-plan, no regression | 100% | Integration tests |
+| SC-019 | `routing_pattern` appears in Plan node system prompt on 2nd combined request | 100% | Integration tests |
+| SC-020 | Every mutating tool call pauses ReAct loop and transitions A2A to `input_required` | 100% | Integration tests |
+| SC-021 | HITL confirmation message contains action + data impact in Vietnamese; classification ≤ 500ms added latency | 100% | Integration tests |
