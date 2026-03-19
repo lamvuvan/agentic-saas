@@ -1871,6 +1871,311 @@ Ví dụ kém:
   **depends\_on**           DispatchEngine graph    Parallel khi independent, sequential khi có dependency --- tự động, không hardcode
   ------------------------- ----------------------- ------------------------------------------------------------------------------------
 
+**1.9 LangGraph Architecture --- Orchestrator & Domain Agent**
+
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **Tại sao LangGraph:** Plain ReAct loop không đủ vì hệ thống cần (1) HITL interrupt/resume --- tạm dừng giữa chừng chờ user xác nhận rồi tiếp tục đúng chỗ; (2) Checkpointing --- serialize toàn bộ state vào Redis để resume sau timeout hoặc restart; (3) Multi-step conditional routing --- graph xác định node tiếp theo dựa trên intent/state, không hardcode flow. LangGraph giải quyết cả 3 bằng StateGraph + interrupt + MemorySaver/AsyncRedisCheckpointer.
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+**1.9.1 Orchestrator --- StateGraph Topology**
+
+\# orchestrator/core/graph.py
+
+\# ── State schema ────────────────────────────────────────────────
+
+class OrchestratorState(TypedDict):
+
+session\_id: str
+
+tenant\_id: str
+
+messages: Annotated\[list\[BaseMessage\], add\_messages\] \# lịch sử hội
+thoại
+
+intent: str \# \"order\"\|\"bi\"\|\"customer\"\|\"chitchat\"\|\"multi\"
+
+plan\_id: str \# UUID, sau khi Plan node lưu vào DB
+
+plan: dict \# {display: {\...}, routing: {steps: \[\...\]}}
+
+dispatch\_results: dict \# {sub\_goal\_sequence: result\_dict}
+
+hitl\_pending: dict \| None \# {tool, args, confirm\_message} --- set
+khi cần HITL
+
+final\_response: str
+
+\# ── Node definitions ────────────────────────────────────────────
+
+async def classify\_intent(state: OrchestratorState, config) -\>
+OrchestratorState:
+
+\"\"\"GPT-4o-mini → phân loại intent + inject AgentRegistry context vào
+messages.\"\"\"
+
+\...
+
+async def plan(state: OrchestratorState, config) -\> OrchestratorState:
+
+\"\"\"GPT-4o → sinh dual-layer plan; PlanService.create\_plan() lưu vào
+PostgreSQL.\"\"\"
+
+\...
+
+async def dispatch(state: OrchestratorState, config) -\>
+OrchestratorState:
+
+\"\"\"DispatchEngine.execute() → gửi A2A tasks, chờ kết quả, inject
+dependency\_results.\"\"\"
+
+\...
+
+async def chitchat(state: OrchestratorState, config) -\>
+OrchestratorState:
+
+\"\"\"GPT-4o-mini → trả lời trực tiếp không cần plan.\"\"\"
+
+\...
+
+async def respond(state: OrchestratorState, config) -\>
+OrchestratorState:
+
+\"\"\"Tổng hợp dispatch\_results → sinh final\_response tiếng Việt thân
+thiện.\"\"\"
+
+\...
+
+\# ── Conditional routing ─────────────────────────────────────────
+
+def route\_after\_classify(state: OrchestratorState) -\> str:
+
+if state\[\"intent\"\] == \"chitchat\": return \"chitchat\"
+
+return \"plan\"
+
+\# ── Graph assembly ──────────────────────────────────────────────
+
+graph = StateGraph(OrchestratorState)
+
+graph.add\_node(\"classify\_intent\", classify\_intent)
+
+graph.add\_node(\"plan\", plan)
+
+graph.add\_node(\"dispatch\", dispatch)
+
+graph.add\_node(\"chitchat\", chitchat)
+
+graph.add\_node(\"respond\", respond)
+
+graph.set\_entry\_point(\"classify\_intent\")
+
+graph.add\_conditional\_edges(\"classify\_intent\",
+route\_after\_classify,
+
+{\"chitchat\": \"chitchat\", \"plan\": \"plan\"})
+
+graph.add\_edge(\"plan\", \"dispatch\")
+
+graph.add\_edge(\"dispatch\", \"respond\")
+
+graph.add\_edge(\"chitchat\", \"respond\")
+
+graph.add\_edge(\"respond\", END)
+
+\# Redis checkpointer --- mỗi session\_id là 1 thread, state persist
+xuyên suốt hội thoại
+
+checkpointer = AsyncRedisCheckpointer(conn=redis\_pool)
+
+compiled = graph.compile(checkpointer=checkpointer)
+
+\# Run: invoke với config thread\_id = session\_id
+
+\# result = await compiled.ainvoke(state, config={\"configurable\":
+{\"thread\_id\": session\_id}})
+
+**1.9.2 Orchestrator Graph --- Luồng Thực Tế**
+
+  ---------------------- ------------- ------------------------------------------------------------- -------------------
+  **Node**               **Model**     **Input từ State**                                            **Ghi vào State**
+  **classify\_intent**   GPT-4o-mini   messages\[-1\] (user input)                                   intent
+  **plan**               GPT-4o        messages, intent, AgentRegistry context, OrchestratorMemory   plan, plan\_id
+  **dispatch**           (no LLM)      plan.routing.steps, plan\_id                                  dispatch\_results
+  **chitchat**           GPT-4o-mini   messages                                                      final\_response
+  **respond**            GPT-4o-mini   dispatch\_results, plan.display                               final\_response
+  ---------------------- ------------- ------------------------------------------------------------- -------------------
+
+**1.9.3 Domain Agent --- StateGraph (Order Agent làm ví dụ)**
+
+\# order\_agent/core/graph.py
+
+\# ── State schema ────────────────────────────────────────────────
+
+class OrderAgentState(TypedDict):
+
+\# Từ A2ATaskPayload (Orchestrator gửi)
+
+task\_id: str
+
+plan\_id: str
+
+original\_message: str
+
+instructions: str
+
+conversation\_history:list\[dict\]
+
+dependency\_results: dict
+
+\# Memory context (MemoryService inject trước khi start graph)
+
+memory\_context: str \# facts domain đã học --- inject vào system prompt
+
+\# Working state (các node ghi dần)
+
+entities: dict \# OrderEntities từ extract\_entities node
+
+matched\_products: list \# ProductMatcher output
+
+customer: dict \# customer object
+
+order\_preview: dict \# {items, total, customer\_name, \...}
+
+confirm\_message: str \# tin nhắn gửi user khi cần xác nhận (HITL)
+
+user\_confirmation: str \# user reply sau interrupt --- \"\" khi chưa có
+
+result: dict \# kết quả cuối cùng trả về Orchestrator
+
+\# ── Nodes ────────────────────────────────────────────────────────
+
+\# extract\_entities → GPT-4o-mini, structured output OrderEntities
+
+\# match\_products → FAISS + optional LLM rerank
+
+\# check\_customer → Tool Registry customer\_\_get\_customer\_by\_name
+
+\# preview\_order → tính toán preview, sinh confirm\_message
+
+\# hitl\_confirm → INTERRUPT POINT: dừng, chờ user xác nhận
+
+\# create\_order → Tool Registry order\_\_create\_order
+(requires\_confirmation=true)
+
+\# done → MemoryService.\_extract\_learnings(), trả kết quả về A2A
+
+\# ── HITL interrupt ──────────────────────────────────────────────
+
+def should\_confirm(state: OrderAgentState) -\> str:
+
+\"\"\"Sau preview: nếu order đủ thông tin → confirm; nếu thiếu → hỏi
+thêm.\"\"\"
+
+if state\[\"order\_preview\"\].get(\"ready\"): return \"hitl\_confirm\"
+
+return \"extract\_entities\" \# quay lại extract để hỏi thêm
+
+graph = StateGraph(OrderAgentState)
+
+\# \... add\_node \...
+
+graph.add\_conditional\_edges(\"preview\_order\", should\_confirm, {
+
+\"hitl\_confirm\": \"hitl\_confirm\",
+
+\"extract\_entities\":\"extract\_entities\"
+
+})
+
+graph.add\_edge(\"hitl\_confirm\", \"create\_order\")
+
+\# interrupt\_before: graph DỪNG trước khi vào hitl\_confirm
+
+\# → A2A task status chuyển sang input\_required
+
+\# → ghi confirm\_message vào A2A response
+
+compiled = graph.compile(
+
+checkpointer=AsyncRedisCheckpointer(conn=redis\_pool),
+
+interrupt\_before=\[\"hitl\_confirm\"\]
+
+)
+
+\# ── Resume sau khi user xác nhận ─────────────────────────────────
+
+\# POST /a2a/tasks/{id}/resume {user\_response: \"ok\"}
+
+\# → await compiled.ainvoke(
+
+\# Command(resume={\"user\_confirmation\": user\_response}),
+
+\# config={\"configurable\": {\"thread\_id\": task\_id}}
+
+\# )
+
+\# Graph tiếp tục từ đúng điểm interrupt, có đầy đủ state cũ từ Redis
+
+**1.9.4 BI Agent & Customer Agent --- Graph Đơn Giản Hơn**
+
+\# BI Agent: không cần HITL (SELECT-only, read-only tools)
+
+\# flow: receive\_task → retrieve\_memory → nl2sql → execute\_query →
+format\_result → done
+
+class BIAgentState(TypedDict):
+
+task\_id: str; plan\_id: str; original\_message: str; instructions: str
+
+conversation\_history: list\[dict\]; dependency\_results: dict
+
+memory\_context: str \# sql\_pattern / glossary\_fix từ MemoryService
+
+generated\_sql: str \# NL2SQL output
+
+query\_result: list \# rows từ asyncpg
+
+result: dict \# formatted response
+
+\# Customer Agent: HITL chỉ với create\_customer / update\_customer
+
+\# flow: receive\_task → retrieve\_memory → classify\_action
+
+\# → \[lookup / hitl\_confirm → create / hitl\_confirm → update\] → done
+
+class CustomerAgentState(TypedDict):
+
+task\_id: str; plan\_id: str; original\_message: str; instructions: str
+
+conversation\_history: list\[dict\]; dependency\_results: dict
+
+memory\_context: str \# contact\_alias / customer\_profile
+
+action: str \# \"lookup\"\|\"create\"\|\"update\"
+
+customer\_data: dict \# tham số cho tool call
+
+confirm\_message: str
+
+user\_confirmation:str
+
+result: dict
+
+**1.9.5 Checkpointing & Session Strategy**
+
+  -------------------- ---------------------------- ------------------------ ----------------------------------------------------
+  **Service**          **thread\_id**               **Checkpointer**         **TTL / Lifecycle**
+  **Orchestrator**     session\_id (per user/tab)   AsyncRedisCheckpointer   24h --- giữ nguyên context hội thoại dài
+  **Order Agent**      a2a\_task\_id (per task)     AsyncRedisCheckpointer   1h --- đủ để user confirm trong HITL flow
+  **BI Agent**         a2a\_task\_id                MemorySaver (in-proc)    Per-task, không cần persist --- no HITL, stateless
+  **Customer Agent**   a2a\_task\_id                AsyncRedisCheckpointer   1h --- cần HITL cho create/update
+  -------------------- ---------------------------- ------------------------ ----------------------------------------------------
+
+  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **Key insight:** thread\_id là cầu nối giữa LangGraph checkpointer và A2A task system. Orchestrator dùng session\_id → giữ hội thoại xuyên suốt nhiều request. Domain Agent dùng a2a\_task\_id → mỗi task là 1 graph execution độc lập, resume khi cần HITL. Redis TTL đảm bảo memory tự dọn dẹp.
+  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
 **2. Tool Registry v1 --- Config-Based**
 
   ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2141,7 +2446,7 @@ xong.
   **3**      Tool Registry: config\_loader.py đọc tools.yaml → build ToolDefinition + dynamic handler; GET /tools; POST /tools/{name}/execute                                                                                                                                  SE          *3 tools load đúng; curl test get\_customers OK*                                                                              **P0**
   **3**      Tool Registry: HTTP adapter dùng auth\_context.\_auth\_headers(); timeout=10s; retry=2; error mapping tiếng Việt                                                                                                                                         SE          *Adapter test với mock server*                                                                                                **P0**
   **4**      ToolRegistryClient (shared): get\_openai\_tools(namespace) convert sang OpenAI function format; execute(name, params) forward token qua header                                                                                                                    AI          *Client test: tools load + execute mock tool*                                                                                 **P0**
-  **4**      Orchestrator LangGraph: OrchestratorState TypedDict, graph compile với nodes stub, Redis checkpointer, session manager                                                                                                                                            AI          *Graph compile; state persist qua Redis*                                                                                      **P0**
+  **4**      Orchestrator LangGraph: OrchestratorState TypedDict (section 1.9.1), StateGraph với 5 nodes stub (classify\_intent/plan/dispatch/chitchat/respond), conditional edge route\_after\_classify, AsyncRedisCheckpointer (thread\_id=session\_id, TTL 24h)             AI          *Graph compile; \`ainvoke\` với stub nodes --- state persist qua Redis, resume được sau restart*                              **P0**
   **4**      DB setup: Alembic init, migration 001\_plans.sql (bảng plans + plan\_sub\_goals đầy đủ cột incl. a2a\_task\_id); asyncpg pool; alembic upgrade head chạy tự động khi Docker Compose start                                                                         SE          *\`docker compose up\` → migration tự chạy; PlanService unit test: create\_plan/link\_task/sync\_from\_task/get\_plan pass*   **P0**
   **5**      Intent Classifier node: GPT-4o-mini, system prompt + 8 few-shot (order/bi/chitchat), structured output JSON, test 20 câu tiếng Việt                                                                                                                               AI          *Accuracy ≥ 90% trên 20 test cases*                                                                                           **P0**
   **5**      A2A Server skeleton cho Order Agent, BI Agent và Customer Agent (3 services): POST /a2a/tasks, GET /a2a/tasks/{id}, GET /.well-known/agent.json (Agent Card); task status: submitted→working→completed; shared base class AbstractA2AAgent tránh trùng lặp code   SE          *Postman test A2A flow trên cả 3 agents; agent card trả đúng JSON*                                                            **P0**
@@ -2181,28 +2486,30 @@ xong.
 
 **4.2 Task Breakdown**
 
-  ---------- ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- --------------------------------------------------------------------------------------------------- -------------
-  **Ngày**   **Công việc**                                                                                                                                                                                                                                         **Owner**   **Deliverable**                                                                                     **Ưu tiên**
-  **8**      DB migration 002\_agent\_memory.sql: bảng agent\_memory + agent\_task\_history (schema đầy đủ, indexes); MemoryService (retrieve/store/find\_similar\_tasks/record\_task); unit test 4 methods                                                        SE          *Migration chạy; MemoryService unit test pass*                                                      **P0**
-  **8**      Product catalog loader: đọc products từ API → normalize (lowercase, bỏ dấu câu, unicode NFC, alias mapping) → corpus text                                                                                                                    SE          *ProductCatalog load \< 3s, normalize test*                                                         **P0**
-  **8**      FAISS embedding index: paraphrase-multilingual-MiniLM-L12-v2, benchmark recall\@3 trên 50 product name variations tiếng Việt                                                                                                                          AI          *recall\@3 ≥ 90% trên test set*                                                                     **P0**
-  **9**      ProductMatcher: cosine search → threshold routing → (auto / llm-rerank / ask-user); auto-rebuild index mỗi 30 phút hoặc webhook                                                                                                                       AI          *precision ≥ 85% trên 30 test queries*                                                              **P0**
-  **9**      VN text utils: số đếm chữ→số (một→1, mười hai→12\...), honorific strip (anh/chị/em/bác/cô/ông/bà), normalize whitespace, unicode NFC                                                                                                                  AI          *unit test 50 cases, 100% pass*                                                                     **P1**
-  **10**     Entity extraction prompt v1: system prompt + 8 few-shot examples đa dạng; structured output OrderEntities JSON; test 30 câu tiếng Việt                                                                                                                AI          *precision/recall ≥ 80% trên 30 inputs*                                                             **P0**
-  **10**     Order Agent LangGraph: StateGraph với nodes (extract→match→check\_customer→preview→confirm→submit), interrupt tại confirm, state schema                                                                                                               AI          *Graph compile; manual test 5 scenarios*                                                            **P0**
-  **11**     Prompt iteration: phân tích error Day 10, thêm few-shot cho edge cases (bàn số, combo, \"thêm vào đơn cũ\", phương ngữ) lên 12 examples                                                                                                               AI          *precision/recall ≥ 90% trên 50 inputs*                                                             **P0**
-  **11**     HITL flow: \_execute\_tool() check requires\_confirmation từ tool def; \_generate\_confirm\_message() dùng gpt-4o-mini + impact\_template; A2A task status input\_required; resume\_after\_hitl() với 4 nhánh (confirm/modify/cancel/scope\_change)   AI          *E2E: gọi order\_\_create\_order → pause → confirm → tạo đơn thành công; modify → re-reason đúng*   **P0**
-  **11**     MemoryAwareReActLoop cho Order Agent: tích hợp MemoryService.retrieve() + find\_similar\_tasks() trước ReAct, \_extract\_learnings() sau task; inject memory context vào system prompt                                                                AI          *Test: chạy 2 task giống nhau → task 2 dùng learnings từ task 1*                                    **P1**
-  **11**     Order Agent A2A server: xử lý skill \"create\_order\"; async task store; integrate LangGraph subgraph; test multi-turn confirm flow                                                                                                                   SE          *A2A E2E: nhận task → tạo đơn thành công*                                                           **P0**
-  **12**     BI Agent: SchemaExplorer (introspect pg\_catalog, table allowlist từ config, business glossary YAML); inject vào system prompt                                                                                                                        SE          *Schema context cho 10 tables analytic DB*                                                          **P0**
-  **12**     NL2SQL prompt: system prompt + schema + 6 few-shot (doanh thu, khách hàng, công nợ, top N, time range); test 15 queries điển hình                                                                                                                     AI          *SQL correctness ≥ 80% trên 15 queries*                                                             **P0**
-  **13**     BI query executor: asyncpg SELECT-only safety check, LIMIT inject, timeout 10s, error handling; result formatter (text/table/summary)                                                                                                                 SE          *10 queries execute đúng, safety block 5 bad SQL*                                                   **P0**
-  **13**     BI Agent A2A server: xử lý skill \"bi\_query\"; integrate NL2SQL + executor; test 20 BI queries (doanh thu, khách hàng, công nợ, tồn kho)                                                                                                             AI          *Pass ≥ 80% trên 20 BI queries*                                                                     **P0**
-  **13**     MemoryAwareReActLoop cho BI Agent: tích hợp MemoryService --- retrieve sql\_pattern/glossary\_fix trước NL2SQL; store SQL pattern đúng sau mỗi query thành công; test memory reuse trên repeated queries                                              AI          *Query lần 2 nhanh hơn và đúng hơn lần 1 nhờ memory*                                                **P1**
-  **13**     Customer Agent A2A server: xử lý 3 skills (lookup\_customer, create\_customer, update\_customer); ReAct loop (GPT-4o-mini) gọi Tool Registry namespace customer; Agent Card endpoint; test 10 kịch bản (tìm khách, tạo mới, xem lịch sử mua)          SE          *A2A E2E: nhận task → lookup/create/update khách thành công; agent card đúng*                       **P0**
-  **13**     MemoryAwareReActLoop cho Customer Agent: retrieve contact\_alias/customer\_profile trước khi lookup (ví dụ: \"anh Lâm\" → customer\_id đã lưu); store profile sau mỗi lần tìm thành công; test alias recall                                           AI          *Test: \"anh Lâm\" lần 2 → resolve đúng customer\_id từ memory mà không cần search lại*             **P1**
-  **14**     Sprint 2 demo: live demo 6 kịch bản thực tế (order chat x2, BI doanh thu, BI khách hàng, BI công nợ, Customer lookup + tạo mới) --- record video                                                                                                      All         *Demo video 5 phút, pass ≥ 85% scenarios*                                                           **P0**
-  ---------- ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- --------------------------------------------------------------------------------------------------- -------------
+  ---------- -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- ------------------------------------------------------------------------------------------------------------------- -------------
+  **Ngày**   **Công việc**                                                                                                                                                                                                                                                                                                                    **Owner**   **Deliverable**                                                                                                     **Ưu tiên**
+  **8**      DB migration 002\_agent\_memory.sql: bảng agent\_memory + agent\_task\_history (schema đầy đủ, indexes); MemoryService (retrieve/store/find\_similar\_tasks/record\_task); unit test 4 methods                                                                                                                                   SE          *Migration chạy; MemoryService unit test pass*                                                                      **P0**
+  **8**      Product catalog loader: đọc products từ API → normalize (lowercase, bỏ dấu câu, unicode NFC, alias mapping) → corpus text                                                                                                                                                                                               SE          *ProductCatalog load \< 3s, normalize test*                                                                         **P0**
+  **8**      FAISS embedding index: paraphrase-multilingual-MiniLM-L12-v2, benchmark recall\@3 trên 50 product name variations tiếng Việt                                                                                                                                                                                                     AI          *recall\@3 ≥ 90% trên test set*                                                                                     **P0**
+  **9**      ProductMatcher: cosine search → threshold routing → (auto / llm-rerank / ask-user); auto-rebuild index mỗi 30 phút hoặc webhook                                                                                                                                                                                                  AI          *precision ≥ 85% trên 30 test queries*                                                                              **P0**
+  **9**      VN text utils: số đếm chữ→số (một→1, mười hai→12\...), honorific strip (anh/chị/em/bác/cô/ông/bà), normalize whitespace, unicode NFC                                                                                                                                                                                             AI          *unit test 50 cases, 100% pass*                                                                                     **P1**
+  **10**     Entity extraction prompt v1: system prompt + 8 few-shot examples đa dạng; structured output OrderEntities JSON; test 30 câu tiếng Việt                                                                                                                                                                                           AI          *precision/recall ≥ 80% trên 30 inputs*                                                                             **P0**
+  **10**     Order Agent LangGraph: OrderAgentState TypedDict (section 1.9.3), StateGraph 7 nodes (extract\_entities→match\_products→check\_customer→preview\_order→hitl\_confirm→create\_order→done), conditional edge should\_confirm, interrupt\_before=\[\"hitl\_confirm\"\], AsyncRedisCheckpointer (thread\_id=a2a\_task\_id, TTL 1h)   AI          *Graph compile; interrupt hoạt động --- graph dừng đúng chỗ; resume với Command(resume=\...) tiếp tục đúng state*   **P0**
+  **11**     Prompt iteration: phân tích error Day 10, thêm few-shot cho edge cases (bàn số, combo, \"thêm vào đơn cũ\", phương ngữ) lên 12 examples                                                                                                                                                                                          AI          *precision/recall ≥ 90% trên 50 inputs*                                                                             **P0**
+  **11**     HITL flow: \_execute\_tool() check requires\_confirmation từ tool def; \_generate\_confirm\_message() dùng gpt-4o-mini + impact\_template; A2A task status input\_required; resume\_after\_hitl() với 4 nhánh (confirm/modify/cancel/scope\_change)                                                                              AI          *E2E: gọi order\_\_create\_order → pause → confirm → tạo đơn thành công; modify → re-reason đúng*                   **P0**
+  **11**     MemoryAwareReActLoop cho Order Agent: tích hợp MemoryService.retrieve() + find\_similar\_tasks() trước ReAct, \_extract\_learnings() sau task; inject memory context vào system prompt                                                                                                                                           AI          *Test: chạy 2 task giống nhau → task 2 dùng learnings từ task 1*                                                    **P1**
+  **11**     Order Agent A2A server: xử lý skill \"create\_order\"; async task store; integrate LangGraph subgraph; test multi-turn confirm flow                                                                                                                                                                                              SE          *A2A E2E: nhận task → tạo đơn thành công*                                                                           **P0**
+  **12**     BI Agent LangGraph: BIAgentState TypedDict (section 1.9.4), StateGraph 6 nodes (receive\_task→retrieve\_memory→nl2sql→execute\_query→format\_result→done), MemorySaver (in-process, no HITL needed), tích hợp SchemaExplorer                                                                                                     AI          *Graph compile; manual test 3 BI queries end-to-end*                                                                **P0**
+  **12**     BI Agent: SchemaExplorer (introspect pg\_catalog, table allowlist từ config, business glossary YAML); inject vào system prompt                                                                                                                                                                                                   SE          *Schema context cho 10 tables analytic DB*                                                                          **P0**
+  **12**     NL2SQL prompt: system prompt + schema + 6 few-shot (doanh thu, khách hàng, công nợ, top N, time range); test 15 queries điển hình                                                                                                                                                                                                AI          *SQL correctness ≥ 80% trên 15 queries*                                                                             **P0**
+  **13**     BI query executor: asyncpg SELECT-only safety check, LIMIT inject, timeout 10s, error handling; result formatter (text/table/summary)                                                                                                                                                                                            SE          *10 queries execute đúng, safety block 5 bad SQL*                                                                   **P0**
+  **13**     BI Agent A2A server: xử lý skill \"bi\_query\"; integrate NL2SQL + executor; test 20 BI queries (doanh thu, khách hàng, công nợ, tồn kho)                                                                                                                                                                                        AI          *Pass ≥ 80% trên 20 BI queries*                                                                                     **P0**
+  **13**     MemoryAwareReActLoop cho BI Agent: tích hợp MemoryService --- retrieve sql\_pattern/glossary\_fix trước NL2SQL; store SQL pattern đúng sau mỗi query thành công; test memory reuse trên repeated queries                                                                                                                         AI          *Query lần 2 nhanh hơn và đúng hơn lần 1 nhờ memory*                                                                **P1**
+  **13**     Customer Agent LangGraph: CustomerAgentState TypedDict (section 1.9.4), StateGraph với conditional routing (lookup không HITL; create/update có interrupt\_before=\[\"hitl\_confirm\"\]), AsyncRedisCheckpointer (thread\_id=a2a\_task\_id, TTL 1h)                                                                              AI          *Graph compile; lookup flow không interrupt; create flow dừng tại confirm rồi resume đúng*                          **P0**
+  **13**     Customer Agent A2A server: xử lý 3 skills (lookup\_customer, create\_customer, update\_customer); tích hợp CustomerAgent LangGraph; Agent Card endpoint; test 10 kịch bản (tìm khách, tạo mới, xem lịch sử mua)                                                                                                                  SE          *A2A E2E: nhận task → lookup/create/update khách thành công; agent card đúng*                                       **P0**
+  **13**     MemoryAwareReActLoop cho Customer Agent: retrieve contact\_alias/customer\_profile trước khi lookup (ví dụ: \"anh Lâm\" → customer\_id đã lưu); store profile sau mỗi lần tìm thành công; test alias recall                                                                                                                      AI          *Test: \"anh Lâm\" lần 2 → resolve đúng customer\_id từ memory mà không cần search lại*                             **P1**
+  **14**     Sprint 2 demo: live demo 6 kịch bản thực tế (order chat x2, BI doanh thu, BI khách hàng, BI công nợ, Customer lookup + tạo mới) --- record video                                                                                                                                                                                 All         *Demo video 5 phút, pass ≥ 85% scenarios*                                                                           **P0**
+  ---------- -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----------- ------------------------------------------------------------------------------------------------------------------- -------------
 
 **4.3 Order Agent System Prompt --- Key Structure**
 

@@ -13,6 +13,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY shared/ ./shared/
+COPY memory/ ./memory/
 COPY bi_agent/ ./bi_agent/
 COPY config/ ./config/
 

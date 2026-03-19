@@ -296,6 +296,7 @@ class MemoryAwareReActLoop:
         params: dict[str, Any],
         memory: "MemoryService | None",
         payload: Any = None,
+        redis: "aioredis.Redis | None" = None,
     ) -> dict[str, Any]:
         """Execute BI Agent pipeline with memory augmentation.
 
@@ -352,7 +353,7 @@ class MemoryAwareReActLoop:
         # ── Step 3: Run the BI Agent pipeline ─────────────────────────────
         from bi_agent.graph import run_bi_graph  # noqa: PLC0415
 
-        result = await run_bi_graph(task_id=task_id, params=augmented_params)
+        result = await run_bi_graph(task_id=task_id, params=augmented_params, redis=redis)
 
         duration_ms = int((time.monotonic() - t0) * 1000)
         outcome = _outcome_from_result(result)

@@ -514,6 +514,141 @@ Persistent routing fact accumulated by the Orchestrator at the meta-level. Disti
 
 ---
 
+---
+
+## LangGraph State Schemas
+
+These TypedDicts define the in-flight execution state for each agent's LangGraph `StateGraph`. They are persisted automatically by the configured checkpointer (Redis or in-memory) after every node execution.
+
+---
+
+### OrchestratorState
+
+LangGraph state for the Orchestrator `StateGraph`. Checkpointed in Redis keyed by `thread_id = session_id` (TTL 24 h).
+
+| Field | Type | LangGraph Reducer | Description |
+|-------|------|-------------------|-------------|
+| `session_id` | `str` | default (replace) | User session identifier |
+| `tenant_id` | `str` | default (replace) | Tenant identifier |
+| `messages` | `list[BaseMessage]` | `add_messages` (append-only) | Full conversation history; each node appends new messages — never replaces |
+| `intent` | `str` | default (replace) | `"order"` \| `"bi"` \| `"customer"` \| `"chitchat"` \| `"multi"` — written by `classify_intent` |
+| `plan_id` | `str` | default (replace) | UUID of the persisted `DisplayPlan`; written by `plan` node after DB insert |
+| `plan` | `dict` | default (replace) | `{"display": {...}, "routing": {"steps": [...]}}` — written by `plan` node |
+| `dispatch_results` | `dict` | default (replace) | `{sub_goal_sequence: result_dict}` — written by `dispatch` node |
+| `hitl_pending` | `dict \| None` | default (replace) | Set when a Domain Agent returns `__scope_change__` signal; `None` otherwise |
+| `final_response` | `str` | default (replace) | Vietnamese response text — written by `respond` or `chitchat` |
+
+**Node → State write mapping**:
+
+| Node | Model | Reads from State | Writes to State |
+|------|-------|-----------------|----------------|
+| `classify_intent` | GPT-4o-mini | `messages[-1]` | `intent` |
+| `plan` | GPT-4o | `messages`, `intent`, AgentRegistry context, OrchestratorMemory | `plan`, `plan_id` |
+| `dispatch` | (no LLM) | `plan.routing.steps`, `plan_id` | `dispatch_results` |
+| `chitchat` | GPT-4o-mini | `messages` | `final_response` |
+| `respond` | GPT-4o-mini | `dispatch_results`, `plan.display` | `final_response` |
+
+**Graph topology**:
+```
+START → classify_intent
+classify_intent --[chitchat]--> chitchat → respond → END
+classify_intent --[plan/multi/order/bi/customer]--> plan → dispatch → respond → END
+```
+
+---
+
+### OrderAgentState
+
+LangGraph state for the Order Agent `StateGraph`. Checkpointed in Redis keyed by `thread_id = a2a_task_id` (TTL 1 h).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_id` | `str` | A2A task identifier (= `thread_id`) |
+| `plan_id` | `str` | Parent Orchestrator plan UUID |
+| `original_message` | `str` | Raw user message from `A2ATaskPayload` |
+| `instructions` | `str` | Per-step goal from Plan LLM |
+| `conversation_history` | `list[dict]` | Last 6 turns from session |
+| `dependency_results` | `dict` | Upstream agent results |
+| `memory_context` | `str` | Injected semantic + episodic memory block (pre-graph) |
+| `entities` | `dict` | `OrderEntities` output from `extract_entities` node |
+| `matched_products` | `list` | `ProductMatch` list from `match_products` node |
+| `customer` | `dict` | Customer record from `check_customer` node |
+| `order_preview` | `dict` | `{items, total, customer_name, table_number, ready: bool}` from `preview_order` node |
+| `confirm_message` | `str` | Vietnamese confirmation message — set in `preview_order`, read when interrupt fires |
+| `user_confirmation` | `str` | `""` until `Command(resume={"user_confirmation": ...})` injects value |
+| `result` | `dict` | Final `A2AResult` written by `done` node |
+
+**Graph topology**:
+```
+START → extract_entities → match_products → check_customer → preview_order
+preview_order --[ready=True]--> hitl_confirm ← INTERRUPT BEFORE
+preview_order --[ready=False]--> extract_entities (loop until ready)
+hitl_confirm → create_order → done → END
+```
+
+**HITL resume call**:
+```python
+await compiled.ainvoke(
+    Command(resume={"user_confirmation": user_response}),
+    config={"configurable": {"thread_id": task_id}}
+)
+```
+
+---
+
+### BIAgentState
+
+LangGraph state for the BI Agent `StateGraph`. Uses `MemorySaver` (in-process, per-task). No HITL interrupt.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_id` | `str` | A2A task identifier |
+| `plan_id` | `str` | Parent Orchestrator plan UUID |
+| `original_message` | `str` | Raw user message |
+| `instructions` | `str` | Per-step goal from Plan LLM |
+| `conversation_history` | `list[dict]` | Last 6 turns |
+| `dependency_results` | `dict` | Upstream agent results |
+| `memory_context` | `str` | Injected `sql_pattern` / `glossary_fix` memory block |
+| `generated_sql` | `str` | SQL produced by `nl2sql` node |
+| `query_result` | `list` | Rows from `execute_query` node (asyncpg) |
+| `result` | `dict` | Final `A2AResult` written by `done` node |
+
+**Graph topology**:
+```
+START → retrieve_memory → nl2sql → safety_check → execute_query → format_result → done → END
+```
+
+---
+
+### CustomerAgentState
+
+LangGraph state for the Customer Agent `StateGraph`. Checkpointed in Redis keyed by `thread_id = a2a_task_id` (TTL 1 h).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_id` | `str` | A2A task identifier (= `thread_id`) |
+| `plan_id` | `str` | Parent Orchestrator plan UUID |
+| `original_message` | `str` | Raw user message |
+| `instructions` | `str` | Per-step goal from Plan LLM |
+| `conversation_history` | `list[dict]` | Last 6 turns |
+| `dependency_results` | `dict` | Upstream agent results |
+| `memory_context` | `str` | Injected `contact_alias` / `customer_profile` memory block |
+| `action` | `str` | `"lookup"` \| `"create"` \| `"update"` — written by `classify_action` node |
+| `customer_data` | `dict` | Parameters for the tool call (name, phone, etc.) |
+| `confirm_message` | `str` | Vietnamese confirmation message — set before HITL interrupt |
+| `user_confirmation` | `str` | `""` until resume with `Command(resume=...)` |
+| `result` | `dict` | Final `A2AResult` written by `done` node |
+
+**Graph topology**:
+```
+START → retrieve_memory → classify_action
+classify_action --[lookup]--> lookup_customer → done → END
+classify_action --[create]--> prepare_create → hitl_confirm ← INTERRUPT BEFORE → create_customer → done → END
+classify_action --[update]--> prepare_update → hitl_confirm ← INTERRUPT BEFORE → update_customer → done → END
+```
+
+---
+
 ## PII Identification (Constitution §Data & Compliance)
 
 | Entity | PII Fields | Handling |
