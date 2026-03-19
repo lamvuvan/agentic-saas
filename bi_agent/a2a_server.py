@@ -83,7 +83,7 @@ async def _process_bi_task(
                 return
         # ── End HITL continuation path ───────────────────────────────────
 
-        result = await loop.run(task_id=task_id, params=params, memory=memory, payload=payload)
+        result = await loop.run(task_id=task_id, params=params, memory=memory, payload=payload, redis=redis)
 
         if result.get("__hitl__"):
             await update_task_status(
@@ -126,6 +126,16 @@ async def submit_task(body: TaskSubmitRequest, request: Request) -> TaskSubmitRe
     )
 
     return TaskSubmitResponse(task_id=task.task_id, status=task.status.value)
+
+
+@router.get("/tasks/{task_id}/trace")
+async def get_task_trace(task_id: str, request: Request) -> dict[str, Any]:
+    """Return the step-by-step execution trace for a task."""
+    redis: aioredis.Redis = request.app.state.redis
+    from shared.a2a.trace import get_steps  # noqa: PLC0415
+
+    steps = await get_steps(redis, task_id)
+    return {"task_id": task_id, "steps": steps}
 
 
 @router.get("/tasks/{task_id}")

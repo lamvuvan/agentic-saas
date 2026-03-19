@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -255,3 +256,97 @@ async def get_plan(plan_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Plan not found")
 
     return plan_data
+
+
+# ---------------------------------------------------------------------------
+# GET /plans/{plan_id}/full — plan + A2A task details + domain agent traces
+# ---------------------------------------------------------------------------
+
+_AGENT_FALLBACK_URLS: dict[str, str] = {
+    "order-agent": "http://order-agent:8002",
+    "bi-agent":    "http://bi-agent:8003",
+}
+
+
+async def _fetch_trace(agent_url: str, task_id: str) -> list[dict[str, Any]]:
+    """Best-effort fetch of /a2a/tasks/{task_id}/trace from a domain agent."""
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{agent_url}/a2a/tasks/{task_id}/trace")
+            if resp.status_code == 200:
+                return resp.json().get("steps", [])
+    except Exception:
+        pass
+    return []
+
+
+@app.get("/plans/{plan_id}/full", tags=["plans"])
+async def get_plan_full(plan_id: str, request: Request) -> dict[str, Any]:
+    """Return plan + sub_goals enriched with A2A task details and domain agent step traces.
+
+    For each sub_goal with an a2a_task_id:
+    - Reads the A2ATask from Redis (status, result, error)
+    - Fetches step trace from the domain agent's GET /a2a/tasks/{id}/trace endpoint
+
+    Frontend can poll this endpoint to display real-time execution progress.
+    """
+    plan_service = getattr(request.app.state, "plan_service", None)
+    if plan_service is None:
+        raise HTTPException(status_code=503, detail="Plan service unavailable")
+
+    plan_data = await plan_service.get_plan(plan_id)
+    if not plan_data:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    redis: aioredis.Redis = request.app.state.redis
+    registry = getattr(request.app.state, "registry", None)
+
+    from shared.a2a.server import get_task as get_a2a_task  # noqa: PLC0415
+
+    enriched_sub_goals: list[dict[str, Any]] = []
+    for sg in plan_data.get("sub_goals", []):
+        sg_dict = dict(sg)
+        task_id: str | None = sg_dict.get("a2a_task_id")
+
+        if task_id:
+            # A2ATask details from Redis
+            task = await get_a2a_task(redis, task_id)
+            if task is not None:
+                task_detail: dict[str, Any] = {
+                    "task_id": task.task_id,
+                    "status": task.status.value,
+                    "created_at": task.created_at.isoformat(),
+                    "updated_at": task.updated_at.isoformat(),
+                }
+                if task.result is not None:
+                    task_detail["result"] = task.result.model_dump()
+                if task.error:
+                    task_detail["error"] = task.error
+                if task.input_request:
+                    task_detail["input_request"] = task.input_request
+                sg_dict["task_detail"] = task_detail
+            else:
+                sg_dict["task_detail"] = None
+
+            # Step trace from domain agent
+            agent_name: str = sg_dict.get("agent_name", "")
+            agent_url: str | None = None
+            if registry is not None:
+                agent_url = registry.get_a2a_endpoint(agent_name)
+            if not agent_url:
+                agent_url = _AGENT_FALLBACK_URLS.get(agent_name)
+
+            if agent_url:
+                sg_dict["steps"] = await _fetch_trace(agent_url, task_id)
+            else:
+                sg_dict["steps"] = []
+        else:
+            sg_dict["task_detail"] = None
+            sg_dict["steps"] = []
+
+        enriched_sub_goals.append(sg_dict)
+
+    return {
+        "plan": dict(plan_data["plan"]),
+        "sub_goals": enriched_sub_goals,
+    }

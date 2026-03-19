@@ -16,6 +16,7 @@ from typing_extensions import TypedDict
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
+from shared.a2a.trace import make_traced_node
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,32 @@ async def _done_node(state: BIAgentState, config: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Trace summary extractor
+# ---------------------------------------------------------------------------
+
+
+def _bi_summary(node_name: str, result: dict) -> dict:
+    """Extract a lightweight summary for a completed BI node."""
+    if node_name == "retrieve_memory":
+        return {"has_context": bool(result.get("memory_context"))}
+    if node_name == "nl2sql":
+        sql = result.get("generated_sql", "")
+        failed = result.get("result", {}).get("status") == "error"
+        return {"sql_preview": sql[:120] if sql else "", "failed": failed}
+    if node_name == "safety_check":
+        rejected = result.get("result", {}).get("status") == "rejected"
+        return {"passed": not rejected}
+    if node_name == "execute_query":
+        return {"row_count": len(result.get("query_result", []))}
+    if node_name == "format_result":
+        inner = result.get("result", {})
+        return {"status": inner.get("status"), "row_count": inner.get("row_count", 0)}
+    if node_name == "done":
+        return {}
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # StateGraph assembly (T057)
 # ---------------------------------------------------------------------------
 
@@ -205,12 +232,13 @@ async def _done_node(state: BIAgentState, config: dict) -> dict:
 def _build_graph() -> StateGraph:
     g = StateGraph(BIAgentState)
 
-    g.add_node("retrieve_memory", _retrieve_memory_node)
-    g.add_node("nl2sql", _nl2sql_node)
-    g.add_node("safety_check", _safety_check_node)
-    g.add_node("execute_query", _execute_query_node)
-    g.add_node("format_result", _format_result_node)
-    g.add_node("done", _done_node)
+    _t = lambda name, fn: make_traced_node(name, fn, _bi_summary)  # noqa: E731
+    g.add_node("retrieve_memory", _t("retrieve_memory", _retrieve_memory_node))
+    g.add_node("nl2sql",          _t("nl2sql",          _nl2sql_node))
+    g.add_node("safety_check",    _t("safety_check",    _safety_check_node))
+    g.add_node("execute_query",   _t("execute_query",   _execute_query_node))
+    g.add_node("format_result",   _t("format_result",   _format_result_node))
+    g.add_node("done",            _t("done",            _done_node))
 
     g.set_entry_point("retrieve_memory")
     g.add_edge("retrieve_memory", "nl2sql")
@@ -237,6 +265,7 @@ async def run_bi_graph(
     params: dict[str, Any],
     memory: Any = None,
     tenant_id: str = "default",
+    redis: Any = None,
 ) -> dict[str, Any]:
     """Execute BI Agent pipeline via StateGraph.
 
@@ -260,6 +289,7 @@ async def run_bi_graph(
             "thread_id": task_id,
             "memory": memory,
             "tenant_id": tenant_id,
+            "redis": redis,
         }
     }
 
