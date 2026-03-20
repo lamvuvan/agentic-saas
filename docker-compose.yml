@@ -57,34 +57,6 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  order-agent:
-    build:
-      context: .
-      dockerfile: order_agent/Dockerfile
-    ports:
-      - "${ORDER_AGENT_PORT:-8002}:8002"
-    environment:
-      TOOL_REGISTRY_URL: http://tool-registry:8001
-      REDIS_URL: redis://redis:6379/0
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_MODEL_FAST: ${OPENAI_MODEL_FAST:-gpt-4o-mini}
-      OPENAI_MODEL_SMART: ${OPENAI_MODEL_SMART:-gpt-4o}
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
-      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
-    depends_on:
-      tool-registry:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    restart: unless-stopped
-
   bi-agent:
     build:
       context: .
@@ -104,40 +76,8 @@ services:
     depends_on:
       tool-registry:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    restart: unless-stopped
-
-  customer-agent:
-    build:
-      context: .
-      dockerfile: customer_agent/Dockerfile
-    ports:
-      - "${CUSTOMER_AGENT_PORT:-8004}:8004"
-    environment:
-      TOOL_REGISTRY_URL: http://tool-registry:8001
-      REDIS_URL: redis://redis:6379/0
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_MODEL_FAST: ${OPENAI_MODEL_FAST:-gpt-4o-mini}
-      OPENAI_MODEL_SMART: ${OPENAI_MODEL_SMART:-gpt-4o}
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
-      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
-    depends_on:
-      tool-registry:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -168,11 +108,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d analytics"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+    # healthcheck:
+    #   test: ["CMD-SHELL", "pg_isready -U user -d analytics"]
+    #   interval: 5s
+    #   timeout: 3s
+    #   retries: 5
     restart: unless-stopped
 
 volumes:
